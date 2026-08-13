@@ -3,6 +3,7 @@ from guardian.actions import (
     GuardianAction,
     GuardianActionMapper,
 )
+from guardian.executor import GuardianActionExecutor
 
 
 def test_low_risk_actions():
@@ -63,3 +64,18 @@ def test_payload_preserves_context():
     assert payload.timestamp == 310.5
     assert payload.explanation == "High risk detected."
     assert payload.reason_codes == ["ESCALATION_CONFIRMED"]
+
+
+def test_executor_does_not_claim_external_delivery():
+    payload = GuardianActionMapper.map_actions(
+        RiskLevel.HIGH,
+        310.0,
+        "Sustained high risk.",
+        ["ESCALATION_CONFIRMED"],
+    )
+
+    result = GuardianActionExecutor.execute(payload)
+
+    assert result.actions_executed == []
+    assert result.incident_logged is False
+    assert all(item.status == "GENERATED" for item in result.action_statuses)

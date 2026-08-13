@@ -1,8 +1,5 @@
 """
 CARES Guardian Action Layer.
-
-The guardian package receives decisions from the CARES decision engine
-and maps them to executable application actions.
 """
 
 from .actions import (
@@ -11,8 +8,26 @@ from .actions import (
     GuardianActionMapper,
 )
 
+from .location import (
+    HardwareLocation,
+    ResolvedLocation,
+    LocationService,
+)
+
+from .executor import (
+    GuardianActionExecution,
+    GuardianActionExecutor,
+    GuardianExecutionResult,
+)
+
 __all__ = [
     "GuardianAction",
     "GuardianActionPayload",
     "GuardianActionMapper",
+    "HardwareLocation",
+    "ResolvedLocation",
+    "LocationService",
+    "GuardianActionExecution",
+    "GuardianActionExecutor",
+    "GuardianExecutionResult",
 ]
