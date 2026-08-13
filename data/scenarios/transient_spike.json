@@ -1,0 +1,22 @@
+{
+  "scenario_name": "transient_spike",
+  "description": "Baseline calibration followed by a single noisy transient HR spike artifact at t=12s.",
+  "samples": [
+    {"timestamp": 0.0, "heart_rate_bpm": 70.0},
+    {"timestamp": 1.0, "heart_rate_bpm": 71.0},
+    {"timestamp": 2.0, "heart_rate_bpm": 70.5},
+    {"timestamp": 3.0, "heart_rate_bpm": 69.8},
+    {"timestamp": 4.0, "heart_rate_bpm": 70.2},
+    {"timestamp": 5.0, "heart_rate_bpm": 70.0},
+    {"timestamp": 6.0, "heart_rate_bpm": 70.4},
+    {"timestamp": 7.0, "heart_rate_bpm": 69.9},
+    {"timestamp": 8.0, "heart_rate_bpm": 70.1},
+    {"timestamp": 9.0, "heart_rate_bpm": 70.5},
+    {"timestamp": 10.0, "heart_rate_bpm": 70.0},
+    {"timestamp": 11.0, "heart_rate_bpm": 70.2},
+    {"timestamp": 12.0, "heart_rate_bpm": 135.0},
+    {"timestamp": 13.0, "heart_rate_bpm": 70.1},
+    {"timestamp": 14.0, "heart_rate_bpm": 69.9},
+    {"timestamp": 15.0, "heart_rate_bpm": 70.3}
+  ]
+}

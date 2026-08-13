@@ -1,0 +1,26 @@
+{
+  "scenario_name": "sustained_panic",
+  "description": "Baseline calibration followed by rapid sustained physiological elevation indicating panic/distress.",
+  "samples": [
+    {"timestamp": 0.0, "heart_rate_bpm": 70.0},
+    {"timestamp": 1.0, "heart_rate_bpm": 71.0},
+    {"timestamp": 2.0, "heart_rate_bpm": 70.5},
+    {"timestamp": 3.0, "heart_rate_bpm": 69.8},
+    {"timestamp": 4.0, "heart_rate_bpm": 70.2},
+    {"timestamp": 5.0, "heart_rate_bpm": 70.0},
+    {"timestamp": 6.0, "heart_rate_bpm": 70.4},
+    {"timestamp": 7.0, "heart_rate_bpm": 69.9},
+    {"timestamp": 8.0, "heart_rate_bpm": 70.1},
+    {"timestamp": 9.0, "heart_rate_bpm": 70.5},
+    {"timestamp": 10.0, "heart_rate_bpm": 75.0},
+    {"timestamp": 11.0, "heart_rate_bpm": 88.0},
+    {"timestamp": 12.0, "heart_rate_bpm": 105.0},
+    {"timestamp": 13.0, "heart_rate_bpm": 112.0},
+    {"timestamp": 14.0, "heart_rate_bpm": 115.0},
+    {"timestamp": 15.0, "heart_rate_bpm": 118.0},
+    {"timestamp": 16.0, "heart_rate_bpm": 120.0},
+    {"timestamp": 17.0, "heart_rate_bpm": 119.0},
+    {"timestamp": 18.0, "heart_rate_bpm": 121.0},
+    {"timestamp": 19.0, "heart_rate_bpm": 120.5}
+  ]
+}

@@ -1,0 +1,52 @@
+{
+  "Model A (Baseline + Deviation)": {
+    "model_name": "Model A (Baseline + Deviation)",
+    "accuracy": 0.9513,
+    "precision": 0.9786,
+    "recall": 0.9129,
+    "f1_score": 0.9446,
+    "specificity": 0.9833,
+    "false_positive_rate": 0.0167,
+    "churn_oscillations_per_min": 1.55
+  },
+  "Model B (A + Trend)": {
+    "model_name": "Model B (A + Trend)",
+    "accuracy": 0.9513,
+    "precision": 0.9786,
+    "recall": 0.9129,
+    "f1_score": 0.9446,
+    "specificity": 0.9833,
+    "false_positive_rate": 0.0167,
+    "churn_oscillations_per_min": 1.55
+  },
+  "Model C (B + Persistence)": {
+    "model_name": "Model C (B + Persistence)",
+    "accuracy": 0.9486,
+    "precision": 0.9796,
+    "recall": 0.9058,
+    "f1_score": 0.9412,
+    "specificity": 0.9843,
+    "false_positive_rate": 0.0157,
+    "churn_oscillations_per_min": 1.53
+  },
+  "Model D (C + Recovery)": {
+    "model_name": "Model D (C + Recovery)",
+    "accuracy": 0.9553,
+    "precision": 0.9628,
+    "recall": 0.9378,
+    "f1_score": 0.9501,
+    "specificity": 0.9698,
+    "false_positive_rate": 0.0302,
+    "churn_oscillations_per_min": 0.76
+  },
+  "Model E (D + HRV)": {
+    "model_name": "Model E (D + HRV)",
+    "accuracy": 0.9553,
+    "precision": 0.9628,
+    "recall": 0.9378,
+    "f1_score": 0.9501,
+    "specificity": 0.9698,
+    "false_positive_rate": 0.0302,
+    "churn_oscillations_per_min": 0.76
+  }
+}
