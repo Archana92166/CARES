@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 import threading
+import uuid
 from dataclasses import asdict, is_dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable, Optional
@@ -86,9 +87,69 @@ class CARESBackend:
         self.sessions = SessionStore(self.database)
         self.geocoder = geocoder or ReverseGeocoder()
         self.engine_factory = engine_factory
-        self._engines: dict[int, CARESDecisionEngine] = {}
+        self._engines: dict[tuple[int, str], CARESDecisionEngine] = {}
         self._engine_lock = threading.RLock()
         self.events = EventBus()
+
+    # ------------------------- monitoring sessions -----------------------
+
+    def start_monitoring_session(
+        self,
+        user_id: int,
+        source: str = "REAL_HARDWARE",
+        scenario: Optional[str] = None,
+        session_id: Optional[str] = None,
+        metadata: Optional[dict[str, Any]] = None,
+    ) -> dict[str, Any]:
+        _validate_user_id(self.database, user_id)
+        source = str(source or "").strip().upper()
+        if not source or len(source) > 80:
+            raise ValidationError("Monitoring source is required.")
+        session_id = session_id or uuid.uuid4().hex
+        if self.database.fetch_one("SELECT id FROM monitoring_sessions WHERE id = ?", (session_id,)):
+            raise ConflictError("Monitoring session already exists.")
+        self.database.execute(
+            "INSERT INTO monitoring_sessions(id, user_id, source, scenario, status, started_at, metadata) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (session_id, user_id, source, scenario, "ACTIVE", utc_now(), _json(metadata or {})),
+        )
+        return self.get_monitoring_session(user_id, session_id)
+
+    def stop_monitoring_session(self, user_id: int, session_id: str) -> dict[str, Any]:
+        session = self.get_monitoring_session(user_id, session_id)
+        self.database.execute(
+            "UPDATE monitoring_sessions SET status = ?, stopped_at = ? WHERE id = ? AND user_id = ?",
+            ("STOPPED", utc_now(), session_id, user_id),
+        )
+        self.discard_runtime(user_id, session_id)
+        return self.get_monitoring_session(user_id, session_id)
+
+    def get_monitoring_session(self, user_id: int, session_id: str) -> dict[str, Any]:
+        row = self.database.fetch_one(
+            "SELECT * FROM monitoring_sessions WHERE id = ? AND user_id = ?",
+            (session_id, user_id),
+        )
+        if row is None:
+            raise NotFoundError("Monitoring session not found.")
+        item = dict(row)
+        item["metadata"] = _decode_json(item["metadata"])
+        return item
+
+    def list_monitoring_sessions(self, user_id: int, limit: int = 50) -> list[dict[str, Any]]:
+        _validate_user_id(self.database, user_id)
+        limit = max(1, min(int(limit), 200))
+        return [
+            self.get_monitoring_session(user_id, row["id"])
+            for row in self.database.fetch_all(
+                "SELECT id FROM monitoring_sessions WHERE user_id = ? ORDER BY started_at DESC LIMIT ?",
+                (user_id, limit),
+            )
+        ]
+
+    def discard_runtime(self, user_id: int, session_id: str) -> None:
+        """Drop the in-memory engine so calibration cannot cross sessions."""
+        with self._engine_lock:
+            self._engines.pop((user_id, session_id), None)
 
     # ------------------------------ accounts ------------------------------
 
@@ -193,49 +254,88 @@ class CARESBackend:
 
     # --------------------------- engine persistence ----------------------
 
-    def process_sample(self, user_id: int, sample: PhysiologicalSample) -> dict[str, Any]:
+    def process_sample(
+        self,
+        user_id: int,
+        sample: PhysiologicalSample,
+        session_id: Optional[str] = None,
+        source: str = "REAL_HARDWARE",
+    ) -> dict[str, Any]:
         _validate_user_id(self.database, user_id)
+        source = str(source or "REAL_HARDWARE").strip().upper()
+        if session_id is None:
+            session = self._active_session_for_source(user_id, source)
+            if session is None:
+                session = self.start_monitoring_session(user_id, source=source)
+            session_id = session["id"]
+        session = self.get_monitoring_session(user_id, session_id)
+        if session["status"] != "ACTIVE":
+            raise ValidationError("Monitoring session is not active.")
+        if session["source"] != source:
+            raise ValidationError("Sample source does not match monitoring session.")
         with self._engine_lock:
-            engine = self._engines.setdefault(user_id, self.engine_factory())
+            engine = self._engines.setdefault((user_id, session_id), self.engine_factory())
             output = engine.process_sample(sample)
-        return self.persist_engine_output(user_id, output)
+        return self.persist_engine_output(user_id, output, session_id=session_id, source=source)
 
-    def persist_engine_output(self, user_id: int, output: EngineOutput) -> dict[str, Any]:
+    def _active_session_for_source(self, user_id: int, source: str) -> Optional[dict[str, Any]]:
+        row = self.database.fetch_one(
+            "SELECT id FROM monitoring_sessions WHERE user_id = ? AND source = ? AND status = 'ACTIVE' ORDER BY started_at DESC LIMIT 1",
+            (user_id, source),
+        )
+        return self.get_monitoring_session(user_id, row["id"]) if row else None
+
+    def persist_engine_output(
+        self,
+        user_id: int,
+        output: EngineOutput,
+        session_id: Optional[str] = None,
+        source: str = "REAL_HARDWARE",
+    ) -> dict[str, Any]:
         """Persist an existing EngineOutput without recalculating it."""
         _validate_user_id(self.database, user_id)
+        source = str(source or "REAL_HARDWARE").strip().upper()
+        if session_id is None:
+            session = self._active_session_for_source(user_id, source)
+            if session is None:
+                session = self.start_monitoring_session(user_id, source=source)
+            session_id = session["id"]
+        session = self.get_monitoring_session(user_id, session_id)
+        if session["status"] != "ACTIVE":
+            raise ValidationError("Monitoring session is not active.")
         payload = output.to_dict()
         created_at = utc_now()
         with self.database.transaction() as connection:
             cursor = connection.execute(
                 "INSERT INTO engine_events(user_id, timestamp, heart_rate, baseline, deviation, "
                 "percentage_deviation, risk_level, risk_score, confidence, trend, persistence, "
-                "recovery_state, reason_codes, explanation, recommended_actions, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "recovery_state, reason_codes, explanation, recommended_actions, created_at, session_id, source) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     user_id, payload["timestamp"], payload["current_value"], payload["baseline"],
                     payload["deviation"], payload["pct_deviation"], payload["risk_level"],
                     payload["risk_score"], payload["confidence"], payload["trend"],
                     payload["persistence"], payload["recovery_state"], _json(payload["reason_codes"]),
-                    payload["human_readable_explanation"], _json(payload["recommended_action"]), created_at,
+                    payload["human_readable_explanation"], _json(payload["recommended_action"]), created_at, session_id, source,
                 ),
             )
             event_id = int(cursor.lastrowid)
             actions = payload["recommended_action"]
             for action in actions:
                 connection.execute(
-                    "INSERT INTO guardian_action_events(user_id, engine_event_id, action_type, status, timestamp, metadata) "
-                    "VALUES (?, ?, ?, ?, ?, ?)",
-                    (user_id, event_id, action, "GENERATED", payload["timestamp"], _json({"source": "GuardianActionMapper"})),
+                    "INSERT INTO guardian_action_events(user_id, engine_event_id, action_type, status, timestamp, metadata, session_id, source) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (user_id, event_id, action, "GENERATED", payload["timestamp"], _json({"source": "GuardianActionMapper"}), session_id, source),
                 )
 
-            location = self._latest_location(user_id, connection=connection)
+            location = self._latest_location(user_id, connection=connection, session_id=session_id)
             incident_id = None
             if payload["risk_level"] == RiskLevel.HIGH.value:
                 incident_cursor = connection.execute(
-                    "INSERT INTO incidents(user_id, engine_event_id, risk_level, timestamp, explanation, location_event_id, status) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO incidents(user_id, engine_event_id, risk_level, timestamp, explanation, location_event_id, status, session_id, source) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (user_id, event_id, payload["risk_level"], payload["timestamp"], payload["human_readable_explanation"],
-                     location["id"] if location else None, "OPEN"),
+                     location["id"] if location else None, "OPEN", session_id, source),
                 )
                 incident_id = int(incident_cursor.lastrowid)
 
@@ -247,17 +347,34 @@ class CARESBackend:
 
     def get_current(self, user_id: int) -> dict[str, Any]:
         event = self._engine_event_for_user(user_id)
+        session = self.get_monitoring_session(user_id, event["session_id"]) if event else None
         return {
             "engine_event": event,
-            "location": self.latest_location(user_id),
-            "actions": self.list_actions(user_id, limit=20),
+            "session": session,
+            "location": self.latest_location(user_id, session_id=event["session_id"] if event else None),
+            "actions": self.list_actions(user_id, limit=20, session_id=event["session_id"] if event else None),
         }
 
-    def history(self, user_id: int, limit: int = 100) -> list[dict[str, Any]]:
+    def history(
+        self,
+        user_id: int,
+        limit: int = 100,
+        session_id: Optional[str] = None,
+        source: Optional[str] = None,
+    ) -> list[dict[str, Any]]:
         _validate_user_id(self.database, user_id)
         limit = max(1, min(int(limit), 500))
+        clauses = ["user_id = ?"]
+        parameters: list[object] = [user_id]
+        if session_id:
+            clauses.append("session_id = ?")
+            parameters.append(session_id)
+        if source:
+            clauses.append("source = ?")
+            parameters.append(str(source).upper())
+        parameters.append(limit)
         rows = self.database.fetch_all(
-            "SELECT * FROM engine_events WHERE user_id = ? ORDER BY id DESC LIMIT ?", (user_id, limit)
+            f"SELECT * FROM engine_events WHERE {' AND '.join(clauses)} ORDER BY id DESC LIMIT ?", parameters
         )
         return [self._decode_engine_event(row) for row in rows]
 
@@ -285,28 +402,47 @@ class CARESBackend:
 
     def ingest_location(self, user_id: int, data: dict[str, Any]) -> dict[str, Any]:
         _validate_user_id(self.database, user_id)
+        session_id = str(data.get("session_id") or "").strip()
+        if session_id:
+            session = self.get_monitoring_session(user_id, session_id)
+            if str(session["source"]).startswith("DEMO_"):
+                raise ValidationError("Demo mode cannot claim hardware location.")
+        else:
+            session = self._active_session_for_source(user_id, "REAL_HARDWARE")
+            if session is None:
+                session = self.start_monitoring_session(user_id, source="REAL_HARDWARE")
+            session_id = str(session["id"])
         location = validate_hardware_location(
             data.get("latitude"), data.get("longitude"), data.get("accuracy"),
             data.get("timestamp"), data.get("source"),
         )
         resolved = self.geocoder.resolve(location)
         cursor = self.database.execute(
-            "INSERT INTO location_events(user_id, timestamp, latitude, longitude, accuracy, source, formatted_address, provider) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO location_events(user_id, timestamp, latitude, longitude, accuracy, source, formatted_address, provider, session_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (user_id, location.timestamp, location.latitude, location.longitude, location.accuracy,
-             location.source, resolved.formatted_address, resolved.provider),
+             location.source, resolved.formatted_address, resolved.provider, session_id),
         )
         event = self._location(int(cursor.lastrowid), user_id)
         self.events.publish(user_id, {"type": "location", "data": event})
         return event
 
-    def latest_location(self, user_id: int) -> Optional[dict[str, Any]]:
+    def latest_location(self, user_id: int, session_id: Optional[str] = None) -> Optional[dict[str, Any]]:
         _validate_user_id(self.database, user_id)
-        row = self.database.fetch_one("SELECT * FROM location_events WHERE user_id = ? ORDER BY id DESC LIMIT 1", (user_id,))
+        if session_id:
+            row = self.database.fetch_one("SELECT * FROM location_events WHERE user_id = ? AND session_id = ? ORDER BY id DESC LIMIT 1", (user_id, session_id))
+        else:
+            row = self.database.fetch_one("SELECT * FROM location_events WHERE user_id = ? ORDER BY id DESC LIMIT 1", (user_id,))
         return dict(row) if row else None
 
-    def _latest_location(self, user_id: int, connection: Any = None) -> Optional[dict[str, Any]]:
-        query = connection.execute("SELECT * FROM location_events WHERE user_id = ? ORDER BY id DESC LIMIT 1", (user_id,)) if connection else self.database.fetch_one("SELECT * FROM location_events WHERE user_id = ? ORDER BY id DESC LIMIT 1", (user_id,))
+    def _latest_location(self, user_id: int, connection: Any = None, session_id: Optional[str] = None) -> Optional[dict[str, Any]]:
+        sql = "SELECT * FROM location_events WHERE user_id = ?"
+        params: tuple[object, ...] = (user_id,)
+        if session_id:
+            sql += " AND session_id = ?"
+            params += (session_id,)
+        sql += " ORDER BY id DESC LIMIT 1"
+        query = connection.execute(sql, params) if connection else self.database.fetch_one(sql, params)
         row = query.fetchone() if connection else query
         return dict(row) if row else None
 
@@ -318,10 +454,13 @@ class CARESBackend:
 
     # ------------------------- actions and incidents ---------------------
 
-    def list_actions(self, user_id: int, limit: int = 100) -> list[dict[str, Any]]:
+    def list_actions(self, user_id: int, limit: int = 100, session_id: Optional[str] = None) -> list[dict[str, Any]]:
         _validate_user_id(self.database, user_id)
         limit = max(1, min(int(limit), 500))
-        rows = self.database.fetch_all("SELECT * FROM guardian_action_events WHERE user_id = ? ORDER BY id DESC LIMIT ?", (user_id, limit))
+        if session_id:
+            rows = self.database.fetch_all("SELECT * FROM guardian_action_events WHERE user_id = ? AND session_id = ? ORDER BY id DESC LIMIT ?", (user_id, session_id, limit))
+        else:
+            rows = self.database.fetch_all("SELECT * FROM guardian_action_events WHERE user_id = ? ORDER BY id DESC LIMIT ?", (user_id, limit))
         return [self._decode_action(row) for row in rows]
 
     def get_action(self, user_id: int, action_id: int) -> dict[str, Any]:
@@ -359,6 +498,13 @@ class CARESBackend:
             )
             item["engine_event"] = self._decode_engine_event(engine_row) if engine_row else None
             item["location"] = self._location(item["location_event_id"], user_id) if item["location_event_id"] else None
+            item["actions"] = [
+                self._decode_action(action)
+                for action in self.database.fetch_all(
+                    "SELECT * FROM guardian_action_events WHERE user_id = ? AND engine_event_id = ? ORDER BY id",
+                    (user_id, item["engine_event_id"]),
+                )
+            ]
             incidents.append(item)
         return incidents
 
@@ -371,6 +517,13 @@ class CARESBackend:
             item["location"] = self._location(item["location_event_id"], user_id)
         else:
             item["location"] = None
+        item["actions"] = [
+            self._decode_action(action)
+            for action in self.database.fetch_all(
+                "SELECT * FROM guardian_action_events WHERE user_id = ? AND engine_event_id = ? ORDER BY id",
+                (user_id, item["engine_event_id"]),
+            )
+        ]
         return item
 
     # ----------------------- baseline audit persistence ------------------
@@ -427,7 +580,7 @@ class CARESBackend:
             "calibration_progress": None,
         }
         with self._engine_lock:
-            engine = self._engines.get(user_id)
+            engine = self._engines.get((user_id, str(event["session_id"])))
             if engine is not None:
                 estimator = engine.baseline_estimator
                 required_seconds = estimator._required_calibration_seconds()

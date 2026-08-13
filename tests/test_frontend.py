@@ -27,6 +27,12 @@ def test_frontend_consumes_engine_contract_without_threshold_logic():
         "reason_codes",
         "recommended_actions",
         "/api/events/stream",
+        "/api/demo/start",
+        "/api/demo/stop",
+        "/api/demo/status",
+        "DEMO_WESAD",
+        "DEMO_SYNTHETIC",
+        "session_id",
     ):
         assert field in javascript
 
@@ -47,3 +53,13 @@ def test_frontend_has_explicit_unavailable_states_and_action_statuses():
     assert "No notification was sent" in javascript
     for status in ("GENERATED", "PENDING", "SENT", "DELIVERED", "FAILED", "UNAVAILABLE"):
         assert status in html or status in javascript
+
+
+def test_frontend_exposes_demo_controls_and_safe_demo_location_state():
+    html = (FRONTEND / "index.html").read_text(encoding="utf-8")
+    javascript = (FRONTEND / "app.js").read_text(encoding="utf-8")
+    for scenario in ("NORMAL", "ELEVATED", "SUSTAINED_HIGH", "RECOVERY"):
+        assert scenario in html
+    assert "Hardware location unavailable in demonstration mode" in javascript
+    assert "DEMO BASELINE" in javascript
+    assert "REAL HARDWARE" in javascript

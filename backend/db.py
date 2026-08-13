@@ -40,6 +40,17 @@ CREATE TABLE IF NOT EXISTS guardian_contacts (
     updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS monitoring_sessions (
+    id TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    source TEXT NOT NULL,
+    scenario TEXT,
+    status TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    stopped_at TEXT,
+    metadata TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS engine_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -57,7 +68,9 @@ CREATE TABLE IF NOT EXISTS engine_events (
     reason_codes TEXT NOT NULL,
     explanation TEXT NOT NULL,
     recommended_actions TEXT NOT NULL,
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    session_id TEXT NOT NULL DEFAULT 'legacy',
+    source TEXT NOT NULL DEFAULT 'REAL_HARDWARE'
 );
 
 CREATE TABLE IF NOT EXISTS guardian_action_events (
@@ -67,7 +80,9 @@ CREATE TABLE IF NOT EXISTS guardian_action_events (
     action_type TEXT NOT NULL,
     status TEXT NOT NULL,
     timestamp REAL NOT NULL,
-    metadata TEXT NOT NULL
+    metadata TEXT NOT NULL,
+    session_id TEXT NOT NULL DEFAULT 'legacy',
+    source TEXT NOT NULL DEFAULT 'REAL_HARDWARE'
 );
 
 CREATE TABLE IF NOT EXISTS location_events (
@@ -79,7 +94,8 @@ CREATE TABLE IF NOT EXISTS location_events (
     accuracy REAL,
     source TEXT NOT NULL,
     formatted_address TEXT NOT NULL,
-    provider TEXT NOT NULL
+    provider TEXT NOT NULL,
+    session_id TEXT NOT NULL DEFAULT 'legacy'
 );
 
 CREATE TABLE IF NOT EXISTS incidents (
@@ -90,7 +106,9 @@ CREATE TABLE IF NOT EXISTS incidents (
     timestamp REAL NOT NULL,
     explanation TEXT NOT NULL,
     location_event_id INTEGER REFERENCES location_events(id) ON DELETE SET NULL,
-    status TEXT NOT NULL
+    status TEXT NOT NULL,
+    session_id TEXT NOT NULL DEFAULT 'legacy',
+    source TEXT NOT NULL DEFAULT 'REAL_HARDWARE'
 );
 
 CREATE TABLE IF NOT EXISTS baseline_daily_records (
@@ -106,6 +124,8 @@ CREATE TABLE IF NOT EXISTS baseline_daily_records (
     eligible_observations INTEGER NOT NULL,
     adaptation_updates INTEGER NOT NULL,
     adaptation_holds INTEGER NOT NULL,
+    session_id TEXT NOT NULL DEFAULT 'legacy',
+    source TEXT NOT NULL DEFAULT 'REAL_HARDWARE',
     UNIQUE(user_id, date)
 );
 
@@ -123,7 +143,9 @@ CREATE TABLE IF NOT EXISTS baseline_adaptation_events (
     signal_quality REAL,
     decision TEXT NOT NULL,
     new_baseline REAL,
-    reason TEXT NOT NULL
+    reason TEXT NOT NULL,
+    session_id TEXT NOT NULL DEFAULT 'legacy',
+    source TEXT NOT NULL DEFAULT 'REAL_HARDWARE'
 );
 
 CREATE INDEX IF NOT EXISTS idx_engine_events_user_time
@@ -161,6 +183,47 @@ class Database:
             self.connection.execute("PRAGMA foreign_keys = ON")
             self.connection.execute("PRAGMA journal_mode = WAL")
             self.connection.executescript(SCHEMA)
+            self._migrate_legacy_columns()
+            self.connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_engine_events_session_time "
+                "ON engine_events(user_id, session_id, id DESC)"
+            )
+
+    def _migrate_legacy_columns(self) -> None:
+        """Add session/source fields to databases created by Milestone 1."""
+        migrations = {
+            "engine_events": {
+                "session_id": "TEXT NOT NULL DEFAULT 'legacy'",
+                "source": "TEXT NOT NULL DEFAULT 'REAL_HARDWARE'",
+            },
+            "guardian_action_events": {
+                "session_id": "TEXT NOT NULL DEFAULT 'legacy'",
+                "source": "TEXT NOT NULL DEFAULT 'REAL_HARDWARE'",
+            },
+            "location_events": {"session_id": "TEXT NOT NULL DEFAULT 'legacy'"},
+            "incidents": {
+                "session_id": "TEXT NOT NULL DEFAULT 'legacy'",
+                "source": "TEXT NOT NULL DEFAULT 'REAL_HARDWARE'",
+            },
+            "baseline_daily_records": {
+                "session_id": "TEXT NOT NULL DEFAULT 'legacy'",
+                "source": "TEXT NOT NULL DEFAULT 'REAL_HARDWARE'",
+            },
+            "baseline_adaptation_events": {
+                "session_id": "TEXT NOT NULL DEFAULT 'legacy'",
+                "source": "TEXT NOT NULL DEFAULT 'REAL_HARDWARE'",
+            },
+        }
+        for table, columns in migrations.items():
+            existing = {
+                row["name"]
+                for row in self.connection.execute(f"PRAGMA table_info({table})").fetchall()
+            }
+            for column, declaration in columns.items():
+                if column not in existing:
+                    self.connection.execute(
+                        f"ALTER TABLE {table} ADD COLUMN {column} {declaration}"
+                    )
 
     @contextmanager
     def transaction(self) -> Iterator[sqlite3.Connection]:

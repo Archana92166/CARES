@@ -13,6 +13,7 @@ from .services import (
     CARESBackend,
     NotFoundError,
 )
+from .demo import DemoController
 
 
 @dataclass(frozen=True)
@@ -39,9 +40,10 @@ class CARESAPI:
     the API only reads persisted EngineOutput data.
     """
 
-    def __init__(self, backend: CARESBackend, secure_cookie: bool = False) -> None:
+    def __init__(self, backend: CARESBackend, secure_cookie: bool = False, demo_controller: Optional[DemoController] = None) -> None:
         self.backend = backend
         self.secure_cookie = secure_cookie
+        self.demo_controller = demo_controller or DemoController(backend)
 
     def authenticate_request(self, headers: Mapping[str, str]) -> int:
         authorization = next(
@@ -87,6 +89,17 @@ class CARESAPI:
         if path == "/api/auth/me" and method == "GET":
             return 200, {"user": self.backend.user(self._user(headers))}, {}
 
+        # Isolated demonstration input. It only feeds PhysiologicalSample
+        # values into the normal backend engine path.
+        if path == "/api/demo/start" and method == "POST":
+            return 202, {"demo": self.demo_controller.start(self._user(headers), body.get("scenario"))}, {}
+        if path == "/api/demo/stop" and method == "POST":
+            return 200, {"demo": self.demo_controller.stop(self._user(headers))}, {}
+        if path == "/api/demo/status" and method == "GET":
+            return 200, {"demo": self.demo_controller.status(self._user(headers))}, {}
+        if path == "/api/monitoring/sessions" and method == "GET":
+            return 200, {"sessions": self.backend.list_monitoring_sessions(self._user(headers), self._limit(query))}, {}
+
         user_id = self._user(headers)
 
         # Guardian contacts
@@ -103,9 +116,13 @@ class CARESAPI:
 
         # Dashboard and baseline read models
         if path == "/api/dashboard/current" and method == "GET":
-            return 200, self.backend.get_current(user_id), {}
+            current = self.backend.get_current(user_id)
+            current["demo"] = self.demo_controller.status(user_id)
+            if current["demo"].get("active"):
+                current["location"] = None
+            return 200, current, {}
         if path == "/api/dashboard/history" and method == "GET":
-            return 200, {"events": self.backend.history(user_id, self._limit(query))}, {}
+            return 200, {"events": self.backend.history(user_id, self._limit(query), query.get("session_id", [None])[0], query.get("source", [None])[0])}, {}
         if path == "/api/baseline/current" and method == "GET":
             return 200, {"baseline": self.backend.baseline_current(user_id)}, {}
         if path == "/api/baseline/daily" and method == "GET":
@@ -117,7 +134,8 @@ class CARESAPI:
         if path == "/api/location" and method == "POST":
             return 201, {"location": self.backend.ingest_location(user_id, body)}, {}
         if path == "/api/location/latest" and method == "GET":
-            return 200, {"location": self.backend.latest_location(user_id)}, {}
+            demo = self.demo_controller.status(user_id)
+            return 200, {"location": None if demo.get("active") else self.backend.latest_location(user_id)}, {}
 
         # Actions
         if path == "/api/actions" and method == "GET":
