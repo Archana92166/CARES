@@ -8,10 +8,15 @@ import os
 import queue
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any
+from urllib.parse import unquote, urlsplit
 
 from .api import CARESAPI
 from .services import CARESBackend
+
+
+FRONTEND_ROOT = Path(__file__).resolve().parent.parent / "frontend"
 
 
 class CARESRequestHandler(BaseHTTPRequestHandler):
@@ -22,8 +27,12 @@ class CARESRequestHandler(BaseHTTPRequestHandler):
         return self.server  # type: ignore[return-value]
 
     def do_GET(self) -> None:
-        if self.path.split("?", 1)[0] == "/api/events/stream":
+        request_path = urlsplit(self.path).path
+        if request_path == "/api/events/stream":
             self._stream_events()
+            return
+        if not request_path.startswith("/api/"):
+            self._serve_frontend()
             return
         self._handle_json()
 
@@ -68,6 +77,37 @@ class CARESRequestHandler(BaseHTTPRequestHandler):
             self.send_header(key, value)
         self.end_headers()
         self.wfile.write(data)
+
+    def _serve_frontend(self) -> None:
+        """Serve the responsive SPA without exposing filesystem paths."""
+        request_path = unquote(urlsplit(self.path).path)
+        relative = request_path.lstrip("/") or "index.html"
+        candidate = (FRONTEND_ROOT / relative).resolve()
+        try:
+            candidate.relative_to(FRONTEND_ROOT.resolve())
+        except ValueError:
+            self.send_error(HTTPStatus.NOT_FOUND, "Not found")
+            return
+
+        if not candidate.is_file():
+            candidate = FRONTEND_ROOT / "index.html"
+        if not candidate.is_file():
+            self.send_error(HTTPStatus.NOT_FOUND, "Frontend is not installed")
+            return
+
+        content = candidate.read_bytes()
+        content_type = {
+            ".html": "text/html; charset=utf-8",
+            ".css": "text/css; charset=utf-8",
+            ".js": "application/javascript; charset=utf-8",
+            ".svg": "image/svg+xml",
+        }.get(candidate.suffix, "application/octet-stream")
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(content)))
+        self.send_header("Cache-Control", "no-cache")
+        self.end_headers()
+        self.wfile.write(content)
 
     def _stream_events(self) -> None:
         try:

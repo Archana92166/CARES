@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0b5262">
+  <meta name="description" content="CARES cognitive assistance and response monitoring">
+  <title>CARES · Cognitive Assistance and Response Emergency System</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <a class="skip-link" href="#main-content">Skip to main content</a>
+
+  <main id="auth-view" class="auth-view" aria-labelledby="auth-title">
+    <section class="auth-panel">
+      <div class="brand-mark brand-mark-large" aria-hidden="true">C</div>
+      <p class="eyebrow">Cognitive Assistance and Response Emergency System</p>
+      <h1 id="auth-title">Care, clarity, and confidence.</h1>
+      <p class="auth-intro">A calm place to understand your live CARES monitoring state and the evidence behind every decision.</p>
+
+      <div class="auth-card">
+        <div class="auth-tabs" role="tablist" aria-label="Account access">
+          <button class="auth-tab is-active" type="button" data-auth-tab="login" role="tab" aria-selected="true">Log in</button>
+          <button class="auth-tab" type="button" data-auth-tab="register" role="tab" aria-selected="false">Create account</button>
+        </div>
+
+        <form id="login-form" class="auth-form" novalidate>
+          <h2>Welcome back</h2>
+          <p class="muted">Use your CARES account to continue.</p>
+          <label for="login-email">Email or username</label>
+          <input id="login-email" name="email" type="text" autocomplete="username" required>
+          <label for="login-password">Password</label>
+          <input id="login-password" name="password" type="password" autocomplete="current-password" required>
+          <p class="form-message" data-form-message="login" role="alert"></p>
+          <button class="button button-primary button-wide" type="submit">Log in</button>
+        </form>
+
+        <form id="register-form" class="auth-form is-hidden" novalidate>
+          <h2>Create your account</h2>
+          <p class="muted">Your information stays tied to your own CARES records.</p>
+          <label for="register-name">Full name</label>
+          <input id="register-name" name="name" type="text" autocomplete="name" required>
+          <label for="register-email">Email or username</label>
+          <input id="register-email" name="email" type="text" autocomplete="username" required>
+          <label for="register-password">Password</label>
+          <input id="register-password" name="password" type="password" autocomplete="new-password" minlength="8" required>
+          <label for="register-confirm">Confirm password</label>
+          <input id="register-confirm" name="confirm" type="password" autocomplete="new-password" minlength="8" required>
+          <p class="form-message" data-form-message="register" role="alert"></p>
+          <button class="button button-primary button-wide" type="submit">Create account</button>
+        </form>
+      </div>
+      <p class="auth-footnote"><span class="status-dot status-dot-muted"></span> Secure account access · Local CARES backend</p>
+    </section>
+    <aside class="auth-aside" aria-label="CARES overview">
+      <div class="aside-glow"></div>
+      <p class="eyebrow eyebrow-light">Your monitoring companion</p>
+      <h2>Understand your body’s signals, one moment at a time.</h2>
+      <div class="aside-list">
+        <div><span class="aside-number">01</span><span>Personal baseline learning</span></div>
+        <div><span class="aside-number">02</span><span>Explainable risk decisions</span></div>
+        <div><span class="aside-number">03</span><span>Guardian-ready response</span></div>
+      </div>
+      <p class="aside-note">CARES is an assistive monitoring system. It is not a diagnosis or a replacement for professional medical care.</p>
+    </aside>
+  </main>
+
+  <div id="app-view" class="app-view is-hidden">
+    <aside class="sidebar" aria-label="Primary navigation">
+      <div class="sidebar-brand">
+        <div class="brand-mark" aria-hidden="true">C</div>
+        <div><strong>CARES</strong><span>Monitoring companion</span></div>
+      </div>
+      <nav class="primary-nav">
+        <p class="nav-label">Overview</p>
+        <button class="nav-item is-active" data-page="dashboard"><span class="nav-icon">⌂</span><span>Dashboard</span></button>
+        <button class="nav-item" data-page="live"><span class="nav-icon">◉</span><span>Live monitoring</span><span class="live-indicator"></span></button>
+        <p class="nav-label">Understand</p>
+        <button class="nav-item" data-page="baseline"><span class="nav-icon">⌁</span><span>Personal baseline</span></button>
+        <button class="nav-item" data-page="history"><span class="nav-icon">▥</span><span>History</span></button>
+        <button class="nav-item" data-page="incidents"><span class="nav-icon">△</span><span>Incidents</span></button>
+        <p class="nav-label">Support</p>
+        <button class="nav-item" data-page="guardian"><span class="nav-icon">♧</span><span>Guardian</span></button>
+        <button class="nav-item" data-page="location"><span class="nav-icon">⌖</span><span>Location</span></button>
+      </nav>
+      <div class="sidebar-bottom">
+        <button class="nav-item" data-page="settings"><span class="nav-icon">⚙</span><span>Settings</span></button>
+        <div class="sidebar-disclaimer">CARES is an assistive tool, not a diagnosis.</div>
+      </div>
+    </aside>
+
+    <div class="app-main">
+      <header class="topbar">
+        <button id="mobile-menu" class="icon-button menu-button" type="button" aria-label="Open navigation" aria-expanded="false">☰</button>
+        <div class="topbar-context"><span class="topbar-kicker">CARES workspace</span><span id="page-title">Dashboard</span></div>
+        <div class="topbar-actions">
+          <span id="connection-status" class="connection-status"><span class="status-dot status-dot-muted"></span>Connecting</span>
+          <button class="icon-button" data-page="settings" type="button" aria-label="Open settings">⚙</button>
+          <button id="topbar-avatar" class="avatar" type="button" data-page="settings" aria-label="Open account settings">—</button>
+        </div>
+      </header>
+
+      <div id="app-alert" class="app-alert is-hidden" role="alert"></div>
+      <div id="main-content" class="page-container" tabindex="-1">
+        <!-- Dashboard -->
+        <section class="page is-active" data-page-view="dashboard" aria-labelledby="dashboard-heading">
+          <div class="page-heading heading-with-actions">
+            <div><p class="eyebrow">Good to see you</p><h1 id="dashboard-heading">Your CARES dashboard</h1><p class="page-subtitle">A clear view of your current monitoring state and what informed it.</p></div>
+            <div class="mode-pill"><span class="status-dot status-dot-muted"></span><span id="monitoring-mode">Awaiting backend stream</span></div>
+          </div>
+          <div id="dashboard-empty" class="empty-state is-hidden"><div class="empty-icon">⌁</div><h2>Waiting for your first engine event</h2><p>When the CARES engine receives trusted hardware data, your current state will appear here.</p><button class="button button-secondary" data-page="live">View live monitoring</button></div>
+          <div id="dashboard-content">
+            <div class="metric-grid metric-grid-main">
+              <article class="metric-card metric-card-featured"><div class="metric-icon teal-icon">♥</div><div><p class="metric-label">Current HR</p><p class="metric-value"><span data-field="current_value">—</span><small>BPM</small></p><p class="metric-caption">Latest engine observation</p></div></article>
+              <article class="metric-card"><p class="metric-label">Personal baseline</p><p class="metric-value"><span data-field="baseline">—</span><small>BPM</small></p><p class="metric-caption">Your learned reference</p></article>
+              <article class="metric-card"><p class="metric-label">Deviation</p><p class="metric-value"><span data-field="deviation">—</span><small>BPM</small></p><p class="metric-caption"><span data-field="percentage_deviation">—</span>% from baseline</p></article>
+              <article class="metric-card"><p class="metric-label">Confidence</p><p class="metric-value"><span data-field="confidence">—</span><small>%</small></p><p class="metric-caption">Evidence confidence</p></article>
+            </div>
+            <div class="dashboard-grid">
+              <article id="risk-card" class="panel risk-panel risk-low">
+                <div class="panel-topline"><span class="eyebrow">Current assessment</span><span class="risk-live-badge"><span class="pulse-dot"></span>Live</span></div>
+                <div class="risk-main"><div><h2 id="risk-label">Risk unavailable</h2><p id="risk-summary">Waiting for an engine decision.</p></div><div class="risk-score"><span id="risk-score-value">—</span><small>risk score</small></div></div>
+                <div class="risk-meta"><div><span>Trend</span><strong><span data-field="trend">—</span> BPM/s</strong></div><div><span>Persistence</span><strong><span data-field="persistence">—</span> s</strong></div><div><span>Recovery</span><strong data-field="recovery_state">—</strong></div><div><span>Timestamp</span><strong data-field="timestamp">—</strong></div></div>
+              </article>
+              <article class="panel why-panel">
+                <div class="panel-heading"><div><p class="eyebrow">Explainability</p><h2>Why did CARES make this decision?</h2></div><button class="text-button" data-toggle="why-details" aria-expanded="true">Collapse</button></div>
+                <div id="why-details" class="why-details">
+                  <div class="why-callout"><span id="why-deviation">—</span><small>from personal baseline</small></div>
+                  <div class="why-facts"><div><span>Risk score</span><strong data-field="risk_score">—</strong></div><div><span>Confidence</span><strong data-field="confidence_fraction">—</strong></div><div><span>Trend</span><strong data-field="trend">—</strong></div><div><span>Recovery</span><strong data-field="recovery_state">—</strong></div></div>
+                  <div class="reason-block"><p class="small-heading">Engine reason codes</p><div id="reason-codes" class="reason-list"><span class="tag tag-muted">Awaiting data</span></div></div>
+                  <div class="explanation-block"><p class="small-heading">Engine explanation</p><p id="engine-explanation" class="explanation-text">The explanation returned by CARES will appear here.</p></div>
+                </div>
+              </article>
+            </div>
+            <div class="dashboard-grid dashboard-grid-lower">
+              <article class="panel response-panel"><div class="panel-heading"><div><p class="eyebrow">Guardian action layer</p><h2>CARES response</h2></div><span class="panel-mark">↗</span></div><p class="panel-intro">Commands generated by the CARES engine, with their current execution status.</p><div id="dashboard-actions" class="action-list"><div class="empty-inline">No actions yet.</div></div><button class="text-button" data-page="guardian">Manage guardian support →</button></article>
+              <article class="panel location-panel"><div class="panel-heading"><div><p class="eyebrow">Hardware location</p><h2>Current location</h2></div><span class="panel-mark">⌖</span></div><div id="dashboard-location" class="location-summary"><div class="empty-inline">Location unavailable</div></div><button class="text-button" data-page="location">Open location details →</button></article>
+            </div>
+          </div>
+        </section>
+
+        <!-- Live monitoring -->
+        <section class="page" data-page-view="live" aria-labelledby="live-heading">
+          <div class="page-heading heading-with-actions"><div><p class="eyebrow">Real-time observability</p><h1 id="live-heading">Live monitoring</h1><p class="page-subtitle">Charts show the values received from CARES. Risk is decided by the backend engine.</p></div><div class="stream-status"><span id="stream-dot" class="status-dot status-dot-muted"></span><span id="stream-label">Not connected</span></div></div>
+          <div class="notice notice-info"><span class="notice-icon">i</span><div><strong>Engine-owned decisions</strong><p>This view never applies thresholds or reinterprets your data. It visualizes the latest EngineOutput from CARES.</p></div></div>
+          <div class="charts-grid"><article class="panel chart-panel chart-wide"><div class="panel-heading"><div><p class="eyebrow">Physiological signal</p><h2>HR vs personal baseline</h2></div><div class="chart-legend"><span><i class="legend-line legend-teal"></i>Current HR</span><span><i class="legend-line legend-sand"></i>Baseline</span></div></div><div id="chart-hr" class="chart" role="img" aria-label="Heart rate and personal baseline chart"></div></article><article class="panel chart-panel"><div class="panel-heading"><div><p class="eyebrow">Continuous evidence</p><h2>Risk score</h2></div></div><div id="chart-risk" class="chart" role="img" aria-label="Risk score chart"></div></article><article class="panel chart-panel"><div class="panel-heading"><div><p class="eyebrow">Personal comparison</p><h2>Deviation</h2></div></div><div id="chart-deviation" class="chart" role="img" aria-label="Deviation chart"></div></article><article class="panel chart-panel"><div class="panel-heading"><div><p class="eyebrow">Evidence quality</p><h2>Confidence</h2></div></div><div id="chart-confidence" class="chart" role="img" aria-label="Confidence chart"></div></article></div>
+          <article class="panel table-panel"><div class="panel-heading"><div><p class="eyebrow">Incoming observations</p><h2>Recent engine events</h2></div><button class="text-button" data-page="history">View full history →</button></div><div id="live-events-table"></div></article>
+        </section>
+
+        <!-- Personal baseline -->
+        <section class="page" data-page-view="baseline" aria-labelledby="baseline-heading">
+          <div class="page-heading"><p class="eyebrow">Personal physiology</p><h1 id="baseline-heading">Personal baseline</h1><p class="page-subtitle">Your reference is learned from trusted observations and kept separate from acute risk events.</p></div>
+          <div class="baseline-hero panel"><div class="baseline-hero-value"><p class="eyebrow">Current personal baseline</p><strong><span id="baseline-large">—</span> <small>BPM</small></strong><span id="baseline-status" class="tag tag-muted">Not available</span></div><div class="baseline-progress"><div class="progress-label"><span>Calibration progress</span><strong id="calibration-label">Engine history pending</strong></div><div class="progress-track"><span id="calibration-bar" style="width:0%"></span></div><p class="muted">Calibration status is shown from available backend records; no frontend estimate is applied.</p></div><div class="baseline-side-fact"><span>Latest trusted samples</span><strong id="trusted-samples">—</strong><span>Current deviation</span><strong id="baseline-deviation">—</strong></div></div>
+          <article class="panel table-panel"><div class="panel-heading"><div><p class="eyebrow">Daily records</p><h2>Baseline history</h2></div></div><div id="daily-table"></div></article>
+          <article class="panel table-panel"><div class="panel-heading"><div><p class="eyebrow">Learning audit</p><h2>Adaptation history</h2></div></div><div id="adaptation-table"></div></article>
+        </section>
+
+        <!-- History -->
+        <section class="page" data-page-view="history" aria-labelledby="history-heading">
+          <div class="page-heading"><p class="eyebrow">Your monitoring record</p><h1 id="history-heading">History</h1><p class="page-subtitle">Explore the values and explanations CARES has recorded over time.</p></div>
+          <div class="charts-grid charts-grid-history"><article class="panel chart-panel chart-wide"><div class="panel-heading"><div><p class="eyebrow">Observations</p><h2>HR vs personal baseline</h2></div></div><div id="history-chart-hr" class="chart chart-tall"></div></article><article class="panel chart-panel"><div class="panel-heading"><div><p class="eyebrow">Decisions</p><h2>Risk score over time</h2></div></div><div id="history-chart-risk" class="chart chart-tall"></div></article></div>
+          <article class="panel table-panel"><div class="panel-heading"><div><p class="eyebrow">Event archive</p><h2>Engine event history</h2></div></div><div id="history-table"></div></article>
+        </section>
+
+        <!-- Incidents -->
+        <section class="page" data-page-view="incidents" aria-labelledby="incidents-heading">
+          <div class="page-heading"><p class="eyebrow">Response history</p><h1 id="incidents-heading">Incidents</h1><p class="page-subtitle">High-risk events recorded by CARES, with their evidence and available location.</p></div>
+          <div id="incidents-list" class="incident-list"></div>
+        </section>
+
+        <!-- Guardian -->
+        <section class="page" data-page-view="guardian" aria-labelledby="guardian-heading">
+          <div class="page-heading"><p class="eyebrow">Trusted support</p><h1 id="guardian-heading">Guardian</h1><p class="page-subtitle">Keep a trusted contact ready. Saving a contact does not send a notification.</p></div>
+          <div class="notice notice-warning"><span class="notice-icon">!</span><div><strong>Contact saved ≠ notification delivered</strong><p>CARES records guardian actions and their actual status. Communication requires a configured delivery integration.</p></div></div>
+          <div class="guardian-layout"><article class="panel guardian-form-panel"><div class="panel-heading"><div><p class="eyebrow">Contact details</p><h2 id="guardian-form-heading">Add a guardian</h2></div></div><form id="guardian-form" class="stack-form"><input type="hidden" id="guardian-id"><label for="guardian-name">Name</label><input id="guardian-name" required><label for="guardian-relationship">Relationship</label><input id="guardian-relationship" required><label for="guardian-phone">Phone number</label><input id="guardian-phone" type="tel" required><p id="guardian-form-message" class="form-message" role="alert"></p><div class="form-actions"><button class="button button-primary" type="submit">Save guardian</button><button id="guardian-cancel" class="button button-ghost is-hidden" type="button">Cancel</button></div></form></article><article class="panel"><div class="panel-heading"><div><p class="eyebrow">Your support network</p><h2>Saved guardians</h2></div></div><div id="guardians-list" class="guardian-list"></div></article></div>
+          <article class="panel table-panel"><div class="panel-heading"><div><p class="eyebrow">Response activity</p><h2>Guardian action status</h2></div></div><p class="panel-intro">Statuses: GENERATED · PENDING · SENT · DELIVERED · FAILED · UNAVAILABLE</p><div id="guardian-actions-table"></div></article>
+        </section>
+
+        <!-- Location -->
+        <section class="page" data-page-view="location" aria-labelledby="location-heading">
+          <div class="page-heading"><p class="eyebrow">Hardware connection</p><h1 id="location-heading">Location</h1><p class="page-subtitle">Only coordinates received from the hardware location source appear here.</p></div>
+          <div id="location-notice" class="notice notice-info"><span class="notice-icon">⌖</span><div><strong>Waiting for hardware GPS</strong><p>When a location event is received, CARES will show the coordinates, source, accuracy, and available address.</p></div></div>
+          <div class="location-page-grid"><article class="panel location-detail-panel"><div class="panel-heading"><div><p class="eyebrow">Latest hardware event</p><h2>Current location</h2></div></div><div id="location-details" class="location-details"></div></article><article class="panel map-panel"><div class="panel-heading"><div><p class="eyebrow">Map view</p><h2>Where you are</h2></div></div><div id="map-container" class="map-container"><div class="map-empty"><span>⌖</span><p>Map unavailable until hardware coordinates arrive.</p></div></div><p class="map-disclaimer">Map links use the actual coordinates supplied by hardware. No location is generated by CARES.</p></article></div>
+        </section>
+
+        <!-- Settings -->
+        <section class="page" data-page-view="settings" aria-labelledby="settings-heading">
+          <div class="page-heading"><p class="eyebrow">Workspace preferences</p><h1 id="settings-heading">Settings</h1><p class="page-subtitle">Account and connection information for this CARES workspace.</p></div>
+          <div class="settings-grid"><article class="panel"><div class="panel-heading"><div><p class="eyebrow">Account</p><h2>Your profile</h2></div></div><dl class="detail-list"><div><dt>Name</dt><dd id="settings-name">—</dd></div><div><dt>Email / username</dt><dd id="settings-email">—</dd></div><div><dt>Account created</dt><dd id="settings-created">—</dd></div></dl></article><article class="panel"><div class="panel-heading"><div><p class="eyebrow">Connections</p><h2>System status</h2></div></div><dl class="detail-list"><div><dt>CARES backend</dt><dd><span class="status-chip status-chip-good">Available</span></dd></div><div><dt>Realtime stream</dt><dd id="settings-stream">Not connected</dd></div><div><dt>Hardware GPS</dt><dd id="settings-gps">Not connected</dd></div><div><dt>Guardian delivery</dt><dd><span class="status-chip status-chip-muted">Not configured</span></dd></div></dl></article></div>
+          <article class="panel settings-safety"><div class="panel-heading"><div><p class="eyebrow">Trust and safety</p><h2>What CARES does</h2></div></div><p>CARES presents decisions made by the CARES engine. The app does not diagnose conditions, invent sensor values, or claim that guardian communication was delivered when no delivery integration confirms it.</p><button id="logout-button" class="button button-secondary" type="button">Log out</button></article>
+        </section>
+      </div>
+      <footer class="app-footer"><span>CARES · Cognitive Assistance and Response Emergency System</span><span>Assistive monitoring, not a diagnosis</span></footer>
+    </div>
+  </div>
+  <script src="/app.js" defer></script>
+</body>
+</html>

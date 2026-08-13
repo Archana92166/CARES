@@ -64,3 +64,11 @@ or `UNAVAILABLE`.
 
 Without a geocoding key, the backend stores exact hardware coordinates and
 uses a coordinate string as the address. It never fabricates a location.
+
+## Responsive app
+
+The same server serves the CARES SPA at `/`. The UI lives in `frontend/` and
+contains Dashboard, Live Monitoring, Personal Baseline, History, Incidents,
+Guardian, Location, and Settings views. It uses the authenticated JSON API and
+`/api/events/stream`; it has no physiological thresholds or independent risk
+calculation. Charts are visual transformations of persisted event values.

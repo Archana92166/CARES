@@ -350,7 +350,17 @@ class CARESBackend:
         _validate_user_id(self.database, user_id)
         limit = max(1, min(int(limit), 500))
         rows = self.database.fetch_all("SELECT * FROM incidents WHERE user_id = ? ORDER BY id DESC LIMIT ?", (user_id, limit))
-        return [dict(row) for row in rows]
+        incidents = []
+        for row in rows:
+            item = dict(row)
+            engine_row = self.database.fetch_one(
+                "SELECT * FROM engine_events WHERE id = ? AND user_id = ?",
+                (item["engine_event_id"], user_id),
+            )
+            item["engine_event"] = self._decode_engine_event(engine_row) if engine_row else None
+            item["location"] = self._location(item["location_event_id"], user_id) if item["location_event_id"] else None
+            incidents.append(item)
+        return incidents
 
     def get_incident(self, user_id: int, incident_id: int) -> dict[str, Any]:
         row = self.database.fetch_one("SELECT * FROM incidents WHERE id = ? AND user_id = ?", (incident_id, user_id))
@@ -410,4 +420,26 @@ class CARESBackend:
         event = self._engine_event_for_user(user_id)
         if event is None:
             return None
-        return {"baseline": event["baseline"], "timestamp": event["timestamp"], "source_engine_event_id": event["id"]}
+        snapshot: dict[str, Any] = {
+            "status": "CALIBRATING" if "BASELINE_CALIBRATING" in event["reason_codes"] else "READY",
+            "trusted_samples": None,
+            "calibration_elapsed_seconds": None,
+            "calibration_progress": None,
+        }
+        with self._engine_lock:
+            engine = self._engines.get(user_id)
+            if engine is not None:
+                estimator = engine.baseline_estimator
+                required_seconds = estimator._required_calibration_seconds()
+                snapshot.update({
+                    "status": estimator.state.value,
+                    "trusted_samples": estimator.samples_count,
+                    "calibration_elapsed_seconds": estimator.calibration_elapsed_seconds,
+                    "calibration_progress": min(100.0, (estimator.calibration_elapsed_seconds / required_seconds) * 100.0) if required_seconds > 0 else None,
+                })
+        return {
+            "baseline": event["baseline"],
+            "timestamp": event["timestamp"],
+            "source_engine_event_id": event["id"],
+            **snapshot,
+        }
