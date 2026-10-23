@@ -231,3 +231,64 @@ def test_sustained_panic_escalation_and_reason_codes():
         in output.reason_codes
         for output in outputs
     )
+
+def test_untrusted_samples_do_not_reach_risk_or_temporal_state():
+    engine = CARESDecisionEngine()
+    for t in range(5):
+        engine.process_sample(PhysiologicalSample(timestamp=float(t), heart_rate_bpm=70.0))
+    baseline = engine.baseline_estimator.baseline_hr
+    output = engine.process_sample(PhysiologicalSample(
+        timestamp=5.0, heart_rate_bpm=150.0,
+        additional_metrics={"hr_valid": 0.0},
+    ))
+    assert output.risk_level == RiskLevel.LOW
+    assert output.reason_codes == ["INVALID_OR_LOW_QUALITY_SAMPLE"]
+    assert engine.baseline_estimator.baseline_hr == baseline
+    assert engine.state_machine.current_state == RiskLevel.LOW
+    assert len(engine.feature_extractor._sample_history) == 5
+    assert all(count == 0 for count in engine.state_machine._candidate_counts.values())
+
+
+def test_duplicate_and_out_of_order_samples_are_non_mutating():
+    engine = CARESDecisionEngine()
+    for t in range(5):
+        engine.process_sample(PhysiologicalSample(timestamp=float(t), heart_rate_bpm=70.0))
+    duplicate = engine.process_sample(PhysiologicalSample(timestamp=4.0, heart_rate_bpm=150.0))
+    older = engine.process_sample(PhysiologicalSample(timestamp=3.0, heart_rate_bpm=150.0))
+    assert duplicate.reason_codes == ["STALE_OR_OUT_OF_ORDER_SAMPLE"]
+    assert older.reason_codes == ["STALE_OR_OUT_OF_ORDER_SAMPLE"]
+    assert engine.baseline_estimator.baseline_hr == 70.0
+
+
+def test_candidate_medium_observation_cannot_adapt_while_state_is_low():
+    engine = CARESDecisionEngine()
+    for t in range(301):
+        engine.process_sample(PhysiologicalSample(timestamp=float(t), heart_rate_bpm=70.0))
+    before = engine.baseline_estimator.baseline_hr
+    output = engine.process_sample(PhysiologicalSample(timestamp=301.0, heart_rate_bpm=85.0))
+    assert output.risk_level == RiskLevel.LOW  # hysteresis has not escalated yet
+    assert engine.baseline_estimator.baseline_hr == before
+
+
+def test_untrusted_timestamp_does_not_block_next_valid_sample():
+    engine = CARESDecisionEngine()
+    for t in range(5):
+        engine.process_sample(PhysiologicalSample(timestamp=float(t), heart_rate_bpm=70.0))
+    rejected = engine.process_sample(PhysiologicalSample(
+        timestamp=100.0, heart_rate_bpm=150.0,
+        additional_metrics={"hr_valid": 0.0},
+    ))
+    accepted = engine.process_sample(PhysiologicalSample(timestamp=5.0, heart_rate_bpm=70.0))
+    assert rejected.reason_codes == ["INVALID_OR_LOW_QUALITY_SAMPLE"]
+    assert "STALE_OR_OUT_OF_ORDER_SAMPLE" not in accepted.reason_codes
+
+
+def test_untrusted_output_uses_unavailable_baseline_sentinel_during_calibration():
+    engine = CARESDecisionEngine()
+    output = engine.process_sample(PhysiologicalSample(
+        timestamp=0.0, heart_rate_bpm=150.0,
+        additional_metrics={"hr_valid": 0.0},
+    ))
+    assert output.risk_level == RiskLevel.LOW
+    assert output.baseline == 0.0
+    assert output.reason_codes == ["INVALID_OR_LOW_QUALITY_SAMPLE"]

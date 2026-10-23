@@ -196,7 +196,7 @@ class BaselineEstimator:
         # TRUST BOUNDARY
         # -----------------------------------------------------
 
-        if not sample.hr_valid:
+        if not sample.is_trusted:
             return self._state
 
         # -----------------------------------------------------
@@ -294,7 +294,7 @@ class BaselineEstimator:
         hrs = [
             sample.heart_rate_bpm
             for sample in self._samples_buffer
-            if sample.hr_valid
+            if sample.is_trusted
         ]
 
         if not hrs:
@@ -357,7 +357,7 @@ class BaselineEstimator:
         """
 
         # Invalid measurement
-        if not sample.hr_valid:
+        if not sample.is_trusted:
             return
 
         # Baseline not ready

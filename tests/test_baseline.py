@@ -65,3 +65,16 @@ def test_baseline_adaptive_update():
     # Adaptive update skipped during HIGH risk
     estimator.update_adaptive(PhysiologicalSample(timestamp=6.0, heart_rate_bpm=120.0), current_risk_level="HIGH")
     assert estimator.baseline_hr == pytest.approx(70.5)
+
+
+def test_low_quality_sample_does_not_calibrate_or_adapt():
+    config = BaselineConfig(window_samples=5, min_samples_required=3)
+    estimator = BaselineEstimator(config)
+    for t in range(3):
+        estimator.add_sample(PhysiologicalSample(timestamp=float(t), heart_rate_bpm=70.0))
+    before = estimator.baseline_hr
+    poor = PhysiologicalSample(timestamp=3.0, heart_rate_bpm=120.0, additional_metrics={"bvp_quality": 0.05})
+    estimator.add_sample(poor)
+    assert estimator.baseline_hr == before
+    estimator.update_adaptive(poor, "LOW")
+    assert estimator.baseline_hr == before

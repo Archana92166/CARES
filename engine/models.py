@@ -7,6 +7,7 @@ from enum import Enum
 from typing import Any, Dict, List, Optional
 
 import numpy as np
+import math
 
 class RiskLevel(str, Enum):
     """Risk severity levels."""
@@ -60,9 +61,7 @@ class PhysiologicalSample:
         For backwards compatibility, samples without an explicit
         hr_valid field are considered valid.
         """
-        return bool(
-            self.additional_metrics.get("hr_valid", 1.0) >= 1.0
-        )
+        return self.additional_metrics.get("hr_valid", 1.0) == 1.0
 
     @property
     def bvp_quality(self) -> float:
@@ -80,10 +79,34 @@ class PhysiologicalSample:
             )
         )
 
+    @property
+    def is_trusted(self) -> bool:
+        """Whether this sample may contribute physiological evidence."""
+        raw_validity = self.additional_metrics.get("hr_valid", 1.0)
+        raw_quality = self.additional_metrics.get("bvp_quality", 1.0)
+
+        # ``additional_metrics`` is mutable after construction. Recheck the
+        # trust boundary here so later metadata mutation cannot turn an
+        # invalid value into trusted evidence through clipping/coercion.
+        if (
+            not isinstance(raw_validity, (int, float))
+            or raw_validity not in (0, 1, 0.0, 1.0)
+            or not isinstance(raw_quality, (int, float))
+            or not math.isfinite(float(raw_quality))
+            or not 0.0 <= float(raw_quality) <= 1.0
+        ):
+            return False
+
+        return raw_validity == 1 and float(raw_quality) >= 0.10
+
     def validate(self) -> None:
         """Validates sample field bounds."""
 
-        if not isinstance(self.timestamp, (int, float)) or self.timestamp < 0:
+        if (
+            not isinstance(self.timestamp, (int, float))
+            or not math.isfinite(float(self.timestamp))
+            or self.timestamp < 0
+        ):
             raise ValueError(
                 f"Invalid timestamp: {self.timestamp}. "
                 "Must be non-negative number."
@@ -95,7 +118,11 @@ class PhysiologicalSample:
                 f"{type(self.heart_rate_bpm)}. Must be numeric."
             )
 
-        if self.heart_rate_bpm < 30.0 or self.heart_rate_bpm > 220.0:
+        if (
+            not math.isfinite(float(self.heart_rate_bpm))
+            or self.heart_rate_bpm < 30.0
+            or self.heart_rate_bpm > 220.0
+        ):
             raise ValueError(
                 "Heart rate out of physiological plausible bounds "
                 f"(30-220 bpm): {self.heart_rate_bpm}"
@@ -116,7 +143,7 @@ class PhysiologicalSample:
         if not isinstance(quality, (int, float)):
             raise ValueError("bvp_quality must be numeric.")
 
-        if not 0.0 <= float(quality) <= 1.0:
+        if not math.isfinite(float(quality)) or not 0.0 <= float(quality) <= 1.0:
             raise ValueError(
                 f"bvp_quality must be between 0 and 1, got {quality}"
             )

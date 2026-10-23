@@ -357,7 +357,7 @@ class PersonalBaselineManager:
         estimate and therefore is not physiological evidence.
         """
 
-        return bool(sample.hr_valid)
+        return bool(sample.is_trusted)
 
     @staticmethod
     def _sample_quality(

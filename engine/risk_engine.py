@@ -109,6 +109,7 @@ class CARESDecisionEngine:
                 self.config.escalation
             )
         )
+        self._last_sample_timestamp: Optional[float] = None
 
     # =========================================================
     # RESET
@@ -127,6 +128,7 @@ class CARESDecisionEngine:
         self.baseline_estimator.reset()
         self.feature_extractor.reset()
         self.state_machine.reset()
+        self._last_sample_timestamp = None
 
     # =========================================================
     # MAIN PROCESSING PIPELINE
@@ -156,6 +158,15 @@ class CARESDecisionEngine:
         """
 
         sample.validate()
+
+        if (
+            self._last_sample_timestamp is not None
+            and sample.timestamp <= self._last_sample_timestamp
+        ):
+            return self._build_untrusted_output(sample, "STALE_OR_OUT_OF_ORDER_SAMPLE")
+        if not sample.is_trusted:
+            return self._build_untrusted_output(sample, "INVALID_OR_LOW_QUALITY_SAMPLE")
+        self._last_sample_timestamp = sample.timestamp
 
         # =====================================================
         # 1. BASELINE CALIBRATION / CURRENT BASELINE
@@ -267,7 +278,10 @@ class CARESDecisionEngine:
 
         self.baseline_estimator.update_adaptive(
             sample,
-            escalated_risk_level.value,
+            # Adaptation must use the current observation's candidate
+            # risk, not the hysteresis state. A first MEDIUM/HIGH
+            # observation may still be reported LOW by the state machine.
+            candidate_level.value,
         )
 
         # =====================================================
@@ -675,6 +689,43 @@ class CARESDecisionEngine:
             human_readable_explanation=explanation,
 
             recommended_action=action_strings,
+        )
+
+    def _build_untrusted_output(
+        self,
+        sample: PhysiologicalSample,
+        reason_code: str,
+    ) -> EngineOutput:
+        """Return a compatible, non-escalating output for unusable input."""
+        explanation = (
+            "Physiological sample was not used as evidence: "
+            f"{reason_code}. Monitoring state was preserved."
+        )
+        action_payload = GuardianActionMapper.map_actions(
+            risk_level=RiskLevel.LOW,
+            timestamp=sample.timestamp,
+            explanation=explanation,
+            reason_codes=[reason_code],
+        )
+        return EngineOutput(
+            timestamp=sample.timestamp,
+            risk_level=RiskLevel.LOW,
+            risk_score=0.0,
+            confidence=0.0,
+            trend=0.0,
+            baseline=(
+                self.baseline_estimator.baseline_hr
+                if self.baseline_estimator.baseline_hr is not None
+                else 0.0
+            ),
+            current_value=sample.heart_rate_bpm,
+            deviation=0.0,
+            pct_deviation=0.0,
+            persistence=0.0,
+            recovery_state=RecoveryState.NO_RECOVERY.value,
+            reason_codes=[reason_code],
+            human_readable_explanation=explanation,
+            recommended_action=[str(action.value) for action in action_payload.actions],
         )
 
     # =========================================================
