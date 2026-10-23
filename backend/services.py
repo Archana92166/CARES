@@ -752,8 +752,20 @@ class CARESBackend:
             "incidents": incidents,
             "actions": actions,
             "locations": locations,
-            "baseline_daily_records": self.list_daily_records(user_id, limit=500),
-            "baseline_adaptation_events": self.list_adaptation_events(user_id, limit=500),
+            "baseline_daily_records": [
+                dict(row)
+                for row in self.database.fetch_all(
+                    "SELECT * FROM baseline_daily_records WHERE user_id = ? ORDER BY date",
+                    (user_id,),
+                )
+            ],
+            "baseline_adaptation_events": [
+                dict(row)
+                for row in self.database.fetch_all(
+                    "SELECT * FROM baseline_adaptation_events WHERE user_id = ? ORDER BY id",
+                    (user_id,),
+                )
+            ],
         }
 
     def delete_monitoring_session(
