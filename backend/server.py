@@ -10,7 +10,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import unquote, urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit
 
 from .api import CARESAPI
 from .services import CARESBackend
@@ -55,6 +55,9 @@ class CARESRequestHandler(BaseHTTPRequestHandler):
         if length > 1_000_000:
             raise ValueError("Request body is too large.")
         raw = self.rfile.read(length).decode("utf-8")
+        content_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+        if content_type == "application/x-www-form-urlencoded":
+            return {key: values[-1] for key, values in parse_qs(raw, keep_blank_values=True).items()}
         payload = json.loads(raw)
         if not isinstance(payload, dict):
             raise ValueError("JSON request body must be an object.")
@@ -145,8 +148,17 @@ class CARESRequestHandler(BaseHTTPRequestHandler):
 class CARESThreadingServer(ThreadingHTTPServer):
     def __init__(self, address: tuple[str, int], backend: CARESBackend) -> None:
         self.backend = backend
-        self.api = CARESAPI(backend, secure_cookie=os.getenv("CARES_COOKIE_SECURE", "0") == "1")
+        self.api = CARESAPI(
+            backend,
+            secure_cookie=os.getenv("CARES_COOKIE_SECURE", "0") == "1",
+            demo_enabled=os.getenv("CARES_ENABLE_DEMO", "0") == "1",
+        )
         super().__init__(address, CARESRequestHandler)
+        backend.start_action_worker(float(os.getenv("CARES_ACTION_WORKER_INTERVAL_SECONDS", "2")))
+
+    def server_close(self) -> None:
+        self.backend.stop_action_worker()
+        super().server_close()
 
 
 def create_server(host: str = "127.0.0.1", port: int = 8000, db_path: str = "data/cares.sqlite3") -> CARESThreadingServer:
@@ -168,7 +180,7 @@ def main() -> None:
         pass
     finally:
         server.server_close()
-        server.backend.database.close()
+        server.backend.close()
 
 
 if __name__ == "__main__":

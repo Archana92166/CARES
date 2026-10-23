@@ -1,5 +1,7 @@
 # CARES Stage 1 backend audit
 
+Stage 2 Wi-Fi hardware integration is documented in [CARES_STAGE2_HARDWARE_INTEGRATION.md](CARES_STAGE2_HARDWARE_INTEGRATION.md). Stage 3 backend/action integration is documented in [CARES_STAGE3_BACKEND_INTEGRATION.md](CARES_STAGE3_BACKEND_INTEGRATION.md).
+
 ## Scope and branch
 
 Independent review of the actual repository on `feature/esp32-hardware-ingestion`. No hardware integration, serial transport, GPS hardware support, frontend change, commit, or push was performed. WESAD/demo paths remain intact.

@@ -130,6 +130,12 @@ class CARESDecisionEngine:
         self.state_machine.reset()
         self._last_sample_timestamp = None
 
+    def start_new_evidence_epoch(self) -> None:
+        """Reset temporal evidence while preserving the personal baseline."""
+        self.feature_extractor.reset()
+        self.state_machine.reset()
+        self._last_sample_timestamp = None
+
     # =========================================================
     # MAIN PROCESSING PIPELINE
     # =========================================================

@@ -145,7 +145,7 @@
         request("/api/guardian"),
         request("/api/location/latest"),
         request("/api/actions?limit=100"),
-        request("/api/demo/status"),
+        request("/api/demo/status").catch(() => ({ demo: { active: false, source: "REAL_HARDWARE_ONLY" } })),
       ]);
       state.current = results[0];
       state.demo = results[9].demo || results[0].demo || { active: false, session: null };

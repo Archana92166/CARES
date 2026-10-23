@@ -3,6 +3,7 @@ import hashlib
 import pytest
 
 from backend import CARESBackend, Database
+from backend.services import AuthorizationError
 from backend.api import CARESAPI
 from backend.location import LocationValidationError
 from engine.models import EngineOutput, RiskLevel
@@ -168,3 +169,12 @@ def test_action_status_is_explicitly_updated(tmp_path):
     updated = backend.update_action_status(user["id"], action["id"], "UNAVAILABLE", {"reason": "no integration configured"})
     assert updated["status"] == "UNAVAILABLE"
     assert updated["metadata"]["reason"] == "no integration configured"
+
+
+def test_public_action_patch_cannot_fabricate_provider_success(tmp_path):
+    backend = make_backend(tmp_path)
+    user = backend.register("Alice", "alice@example.com", "correct horse")
+    backend.persist_engine_output(user["id"], high_output())
+    action = backend.list_actions(user["id"])[0]
+    with pytest.raises(AuthorizationError):
+        backend.update_action_status(user["id"], action["id"], "DELIVERED")

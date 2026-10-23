@@ -95,7 +95,9 @@ CREATE TABLE IF NOT EXISTS location_events (
     source TEXT NOT NULL,
     formatted_address TEXT NOT NULL,
     provider TEXT NOT NULL,
-    session_id TEXT NOT NULL DEFAULT 'legacy'
+    session_id TEXT NOT NULL DEFAULT 'legacy',
+    device_id TEXT,
+    received_at REAL
 );
 
 CREATE TABLE IF NOT EXISTS incidents (
@@ -109,6 +111,22 @@ CREATE TABLE IF NOT EXISTS incidents (
     status TEXT NOT NULL,
     session_id TEXT NOT NULL DEFAULT 'legacy',
     source TEXT NOT NULL DEFAULT 'REAL_HARDWARE'
+);
+
+CREATE TABLE IF NOT EXISTS action_attempts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    action_id INTEGER NOT NULL REFERENCES guardian_action_events(id) ON DELETE CASCADE,
+    recipient_id INTEGER REFERENCES guardian_contacts(id) ON DELETE SET NULL,
+    channel TEXT NOT NULL,
+    status TEXT NOT NULL,
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    provider_reference TEXT,
+    requested_at TEXT,
+    updated_at TEXT NOT NULL,
+    next_attempt_at TEXT,
+    failure_reason TEXT,
+    metadata TEXT NOT NULL,
+    UNIQUE(action_id, recipient_id, channel)
 );
 
 CREATE TABLE IF NOT EXISTS baseline_daily_records (
@@ -156,6 +174,8 @@ CREATE INDEX IF NOT EXISTS idx_locations_user_time
     ON location_events(user_id, id DESC);
 CREATE INDEX IF NOT EXISTS idx_incidents_user_time
     ON incidents(user_id, id DESC);
+CREATE INDEX IF NOT EXISTS idx_action_attempts_action
+    ON action_attempts(action_id, id DESC);
 CREATE INDEX IF NOT EXISTS idx_adaptation_user_time
     ON baseline_adaptation_events(user_id, id DESC);
 """
@@ -200,7 +220,11 @@ class Database:
                 "session_id": "TEXT NOT NULL DEFAULT 'legacy'",
                 "source": "TEXT NOT NULL DEFAULT 'REAL_HARDWARE'",
             },
-            "location_events": {"session_id": "TEXT NOT NULL DEFAULT 'legacy'"},
+            "location_events": {
+                "session_id": "TEXT NOT NULL DEFAULT 'legacy'",
+                "device_id": "TEXT",
+                "received_at": "REAL",
+            },
             "incidents": {
                 "session_id": "TEXT NOT NULL DEFAULT 'legacy'",
                 "source": "TEXT NOT NULL DEFAULT 'REAL_HARDWARE'",

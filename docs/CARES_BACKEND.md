@@ -28,7 +28,7 @@ cannot become the next real-hardware runtime baseline.
 `CARESBackend.process_sample(user_id, sample)` is the hardware ingestion seam.
 It invokes the existing engine, persists the exact `EngineOutput`, records the
 GuardianActionMapper commands as `GENERATED`, and creates an incident for an
-actual `HIGH` output. It does not send SMS or contact emergency services.
+actual `HIGH` output. It does not synchronously send SMS or contact emergency services. When explicitly configured, a separate durable action worker executes Twilio SMS/voice adapter requests and persists provider results; the voice integration is an authorized callback call, not public-safety dispatch.
 
 ## Storage
 
@@ -58,15 +58,14 @@ GET    /api/baseline/adaptation
 POST   /api/location            GET    /api/location/latest
 GET    /api/actions             GET/PATCH /api/actions/{id}
 GET    /api/incidents           GET    /api/incidents/{id}
+POST   /api/provider/twilio/status  POST /api/provider/twilio/voice-status
 GET    /api/events/stream       (authenticated SSE stream)
 POST   /api/demo/start          POST /api/demo/stop
 GET    /api/demo/status         GET  /api/monitoring/sessions
 ```
 
 There is deliberately no risk-calculation endpoint. A frontend reads the
-persisted engine output. Action statuses begin as `GENERATED`; integrations
-must explicitly transition them to `PENDING`, `SENT`, `DELIVERED`, `FAILED`,
-or `UNAVAILABLE`.
+persisted engine output. Action statuses are `GENERATED` when no live provider is configured and `QUEUED` when an explicitly enabled provider worker will execute them. Provider results use `SUBMITTED`, `DELIVERED`, `FAILED`, or `UNKNOWN`; ambiguous submissions are never reported as delivered.
 
 ## Security and configuration
 

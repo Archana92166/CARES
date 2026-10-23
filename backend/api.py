@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from typing import Any, Mapping, Optional
 from urllib.parse import parse_qs, urlsplit
@@ -40,9 +41,16 @@ class CARESAPI:
     the API only reads persisted EngineOutput data.
     """
 
-    def __init__(self, backend: CARESBackend, secure_cookie: bool = False, demo_controller: Optional[DemoController] = None) -> None:
+    def __init__(
+        self,
+        backend: CARESBackend,
+        secure_cookie: bool = False,
+        demo_controller: Optional[DemoController] = None,
+        demo_enabled: bool = True,
+    ) -> None:
         self.backend = backend
         self.secure_cookie = secure_cookie
+        self.demo_enabled = bool(demo_enabled)
         self.demo_controller = demo_controller or DemoController(backend)
 
     def authenticate_request(self, headers: Mapping[str, str]) -> int:
@@ -89,8 +97,29 @@ class CARESAPI:
         if path == "/api/auth/me" and method == "GET":
             return 200, {"user": self.backend.user(self._user(headers))}, {}
 
+        if path == "/api/provider/twilio/status" and method == "POST":
+            callback_url = os.getenv("CARES_SMS_STATUS_CALLBACK_URL", "").strip()
+            if not callback_url:
+                raise NotFoundError("Provider callback is not configured.")
+            self.backend.process_twilio_status(body, headers, callback_url)
+            return 200, {"ok": True}, {}
+
+        if path == "/api/provider/twilio/voice-status" and method == "POST":
+            callback_url = os.getenv("CARES_VOICE_STATUS_CALLBACK_URL", "").strip()
+            if not callback_url:
+                raise NotFoundError("Provider callback is not configured.")
+            self.backend.process_twilio_voice_status(body, headers, callback_url)
+            return 200, {"ok": True}, {}
+
+        # Device-authenticated raw-BVP hardware ingestion. The device
+        # credential, not a packet-supplied user_id, establishes ownership.
+        if path == "/api/hardware/ingest" and method == "POST":
+            return 202, self.backend.ingest_hardware_packet(body, headers), {}
+
         # Isolated demonstration input. It only feeds PhysiologicalSample
         # values into the normal backend engine path.
+        if path in {"/api/demo/start", "/api/demo/stop", "/api/demo/status"} and not self.demo_enabled:
+            raise NotFoundError("Demo routes are disabled for production operation.")
         if path == "/api/demo/start" and method == "POST":
             return 202, {"demo": self.demo_controller.start(self._user(headers), body.get("scenario"))}, {}
         if path == "/api/demo/stop" and method == "POST":
@@ -101,6 +130,13 @@ class CARESAPI:
             return 200, {"sessions": self.backend.list_monitoring_sessions(self._user(headers), self._limit(query))}, {}
 
         user_id = self._user(headers)
+
+        if path == "/api/hardware/status" and method == "GET":
+            return 200, {
+                "devices": self.backend.hardware_status(
+                    user_id, query.get("device_id", [None])[0]
+                )
+            }, {}
 
         # Guardian contacts
         if path == "/api/guardian" and method == "GET":
@@ -117,7 +153,11 @@ class CARESAPI:
         # Dashboard and baseline read models
         if path == "/api/dashboard/current" and method == "GET":
             current = self.backend.get_current(user_id)
-            current["demo"] = self.demo_controller.status(user_id)
+            current["demo"] = (
+                self.demo_controller.status(user_id)
+                if self.demo_enabled
+                else {"active": False, "source": "REAL_HARDWARE_ONLY"}
+            )
             if current["demo"].get("active"):
                 current["location"] = None
             return 200, current, {}
@@ -134,7 +174,7 @@ class CARESAPI:
         if path == "/api/location" and method == "POST":
             return 201, {"location": self.backend.ingest_location(user_id, body)}, {}
         if path == "/api/location/latest" and method == "GET":
-            demo = self.demo_controller.status(user_id)
+            demo = self.demo_controller.status(user_id) if self.demo_enabled else {"active": False}
             return 200, {"location": None if demo.get("active") else self.backend.latest_location(user_id)}, {}
 
         # Actions
