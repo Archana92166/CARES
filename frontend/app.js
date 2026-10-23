@@ -13,6 +13,9 @@
     guardians: [],
     location: null,
     actions: [],
+    hardware: [],
+    sessions: [],
+    system: null,
     demo: { active: false, session: null },
     page: "dashboard",
     eventSource: null,
@@ -146,6 +149,9 @@
         request("/api/location/latest"),
         request("/api/actions?limit=100"),
         request("/api/demo/status").catch(() => ({ demo: { active: false, source: "REAL_HARDWARE_ONLY" } })),
+        request("/api/hardware/status"),
+        request("/api/monitoring/sessions?limit=100"),
+        request("/api/system/status"),
       ]);
       state.current = results[0];
       state.demo = results[9].demo || results[0].demo || { active: false, session: null };
@@ -157,6 +163,9 @@
       state.guardians = results[6].guardians || [];
       state.location = results[7].location || null;
       state.actions = results[8].actions || [];
+      state.hardware = results[10].devices || [];
+      state.sessions = results[11].sessions || [];
+      state.system = results[12].status || null;
       renderAll();
     } catch (error) {
       if (error.status === 401) {
@@ -211,14 +220,17 @@
 
   async function refreshSecondaryData() {
     try {
-      const [current, incidents, actions, location] = await Promise.all([
+      const [current, incidents, actions, location, hardware, system] = await Promise.all([
         request("/api/dashboard/current"), request("/api/incidents?limit=100"), request("/api/actions?limit=100"), request("/api/location/latest"),
+        request("/api/hardware/status"), request("/api/system/status"),
       ]);
       state.current = current;
       state.demo = current.demo || state.demo;
       state.incidents = incidents.incidents || [];
       state.actions = actions.actions || [];
       state.location = location.location || null;
+      state.hardware = hardware.devices || [];
+      state.system = system.status || null;
       renderAll();
     } catch (_) { /* The current event remains visible while the API recovers. */ }
   }
@@ -319,13 +331,19 @@
     $("#monitoring-status-dot")?.classList.toggle("status-dot-muted", !active);
   }
 
+  function actionAttemptSummary(action) {
+    const attempts = action.attempts || [];
+    if (!attempts.length) return "No recipient attempt";
+    return attempts.map((attempt) => `${attempt.channel || "provider"} · ${attempt.status || "UNKNOWN"}`).join("; ");
+  }
+
   function renderActions() {
     const eventActions = currentEvent()?.recommended_actions || [];
     const actions = (state.actions && state.actions.length) ? state.actions : eventActions.map((action) => ({ action_type: action, status: "GENERATED", timestamp: currentEvent()?.timestamp, engine_event_id: currentEvent()?.id }));
     const html = actions.slice(0, 8).map((action) => `<div class="action-row"><span class="action-name"><span class="action-symbol">${action.status === "DELIVERED" ? "✓" : "·"}</span><span>${escapeHTML(actionLabel(action.action_type))}</span></span><span class="action-status status-${escapeHTML(String(action.status || "GENERATED").toLowerCase())}">${escapeHTML(action.status || "GENERATED")}</span></div>`).join("");
     const content = html || '<div class="empty-inline">No guardian actions recorded yet.</div>';
     $("#dashboard-actions").innerHTML = content;
-    $("#guardian-actions-table").innerHTML = actions.length ? `<div class="table-scroll"><table><thead><tr><th>Action</th><th>Status</th><th>Generated</th><th>Engine event</th></tr></thead><tbody>${actions.map((action) => `<tr><td><strong>${escapeHTML(action.action_type)}</strong></td><td><span class="action-status status-${escapeHTML(String(action.status || "").toLowerCase())}">${escapeHTML(action.status || "—")}</span></td><td>${escapeHTML(timestamp(action.timestamp))}</td><td>#${escapeHTML(action.engine_event_id)}</td></tr>`).join("")}</tbody></table></div>` : '<div class="table-empty">No guardian action events yet.</div>';
+    $("#guardian-actions-table").innerHTML = actions.length ? `<div class="table-scroll"><table><thead><tr><th>Action</th><th>Status</th><th>Recipient attempts</th><th>Generated</th><th>Engine event</th></tr></thead><tbody>${actions.map((action) => `<tr><td><strong>${escapeHTML(action.action_type)}</strong></td><td><span class="action-status status-${escapeHTML(String(action.status || "").toLowerCase())}">${escapeHTML(action.status || "—")}</span></td><td>${escapeHTML(actionAttemptSummary(action))}</td><td>${escapeHTML(timestamp(action.timestamp))}</td><td>#${escapeHTML(action.engine_event_id)}</td></tr>`).join("")}</tbody></table></div>` : '<div class="table-empty">No guardian action events yet.</div>';
   }
 
   function renderLocation() {
@@ -453,7 +471,10 @@
 
   function renderGuardians() {
     const guardians = state.guardians || [];
-    $("#guardians-list").innerHTML = guardians.length ? guardians.map((guardian) => `<div class="guardian-card"><span class="guardian-avatar">${escapeHTML(initials(guardian.name))}</span><div class="guardian-card-main"><strong>${escapeHTML(guardian.name)}</strong><span>${escapeHTML(guardian.relationship)} · ${escapeHTML(guardian.phone_number)}</span><span class="tag tag-low">Guardian contact saved</span><span class="tag tag-muted">Notification delivery not configured</span></div><div class="guardian-actions"><button class="mini-button" data-edit-guardian="${guardian.id}" type="button">Edit</button><button class="mini-button danger" data-delete-guardian="${guardian.id}" type="button">Remove</button></div></div>`).join("") : '<div class="empty-inline">No guardian contacts saved yet.</div>';
+    const sms = state.system?.sms_provider === "configured" ? "SMS configured" : "SMS not configured";
+    const voice = state.system?.voice_provider === "configured" ? "Voice configured" : "Voice not configured";
+    const delivery = `${sms} · ${voice}`;
+    $("#guardians-list").innerHTML = guardians.length ? guardians.map((guardian) => `<div class="guardian-card"><span class="guardian-avatar">${escapeHTML(initials(guardian.name))}</span><div class="guardian-card-main"><strong>${escapeHTML(guardian.name)}</strong><span>${escapeHTML(guardian.relationship)} · ${escapeHTML(guardian.phone_number)}</span><span class="tag tag-low">Guardian contact saved</span><span class="tag tag-muted">${escapeHTML(delivery)}</span></div><div class="guardian-actions"><button class="mini-button" data-edit-guardian="${guardian.id}" type="button">Edit</button><button class="mini-button danger" data-delete-guardian="${guardian.id}" type="button">Remove</button></div></div>`).join("") : '<div class="empty-inline">No guardian contacts saved yet.</div>';
   }
 
   function renderSettings() {
@@ -461,6 +482,23 @@
     $("#settings-email").textContent = state.user?.email || "—";
     $("#settings-created").textContent = timestamp(state.user?.created_at);
     $("#settings-gps").textContent = state.location ? "Connected" : "Not connected";
+    const device = state.hardware?.[0];
+    $("#settings-hardware").textContent = device ? `${device.device_id} · ${device.transport_status}` : "No registered hardware";
+    const system = state.system;
+    $("#settings-delivery").textContent = system ? `${system.sms_provider} SMS · ${system.voice_provider} voice` : "Unavailable";
+    const select = $("#data-session-select");
+    const deleteButton = $("#delete-session-button");
+    if (select) {
+      const selected = select.value;
+      select.innerHTML = state.sessions?.length
+        ? state.sessions.map((session) => `<option value="${escapeHTML(session.id)}">${escapeHTML(session.source)} · ${escapeHTML(session.status)} · ${escapeHTML(timestamp(session.started_at))}</option>`).join("")
+        : '<option value="">No monitoring sessions</option>';
+      if (selected && state.sessions.some((session) => session.id === selected)) select.value = selected;
+      if (deleteButton) {
+        const session = state.sessions.find((item) => item.id === select.value);
+        deleteButton.disabled = !session || session.status === "ACTIVE";
+      }
+    }
   }
 
   function resetGuardianForm() {
@@ -507,6 +545,45 @@
       state.guardians = (await request("/api/guardian")).guardians || [];
       renderGuardians();
     } catch (error) { notify(error.message); }
+  }
+
+  async function exportData() {
+    const button = $("#export-data-button");
+    if (button) button.disabled = true;
+    try {
+      const payload = await request("/api/data/export");
+      const blob = new Blob([JSON.stringify(payload.export, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `cares-export-${new Date().toISOString().slice(0, 10)}.json`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      setMessage("#data-management-message", "Your CARES records were exported locally.");
+    } catch (error) {
+      setMessage("#data-management-message", error.message);
+    } finally {
+      if (button) button.disabled = false;
+    }
+  }
+
+  async function deleteSelectedSession() {
+    const sessionId = $("#data-session-select")?.value;
+    const session = state.sessions.find((item) => item.id === sessionId);
+    if (!session || session.status === "ACTIVE") return;
+    if (!window.confirm(`Permanently delete the stopped ${session.source} session and its stored events, incidents, actions, and location records?`)) return;
+    const button = $("#delete-session-button");
+    if (button) button.disabled = true;
+    try {
+      await request(`/api/monitoring/sessions/${encodeURIComponent(sessionId)}`, { method: "DELETE", body: { confirm: true } });
+      await loadData();
+      setMessage("#data-management-message", "The selected monitoring session was deleted. Provider-side messages cannot be recalled.");
+    } catch (error) {
+      setMessage("#data-management-message", error.message);
+      renderSettings();
+    }
   }
 
   async function login(event) {
@@ -582,6 +659,9 @@
     $("#logout-button").addEventListener("click", logout);
     $("#demo-start").addEventListener("click", startDemo);
     $("#demo-stop").addEventListener("click", stopDemo);
+    $("#export-data-button").addEventListener("click", exportData);
+    $("#delete-session-button").addEventListener("click", deleteSelectedSession);
+    $("#data-session-select").addEventListener("change", renderSettings);
     document.addEventListener("click", (event) => {
       const pageButton = event.target.closest("[data-page]");
       if (pageButton) { navigate(pageButton.dataset.page); $(".sidebar")?.classList.remove("is-open"); }

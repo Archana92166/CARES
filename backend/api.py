@@ -131,6 +131,23 @@ class CARESAPI:
 
         user_id = self._user(headers)
 
+        if path == "/api/data/export" and method == "GET":
+            return 200, {"export": self.backend.export_user_data(user_id)}, {}
+
+        session_prefix = "/api/monitoring/sessions/"
+        if path.startswith(session_prefix) and method == "DELETE":
+            session_id = path[len(session_prefix):]
+            if not session_id:
+                raise NotFoundError("Monitoring session not found.")
+            return 200, {
+                "deletion": self.backend.delete_monitoring_session(
+                    user_id, session_id, body.get("confirm")
+                )
+            }, {}
+
+        if path == "/api/system/status" and method == "GET":
+            return 200, {"status": self.backend.system_status(user_id)}, {}
+
         if path == "/api/hardware/status" and method == "GET":
             return 200, {
                 "devices": self.backend.hardware_status(

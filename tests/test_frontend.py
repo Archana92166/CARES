@@ -63,3 +63,13 @@ def test_frontend_exposes_demo_controls_and_safe_demo_location_state():
     assert "Hardware location unavailable in demonstration mode" in javascript
     assert "DEMO BASELINE" in javascript
     assert "REAL HARDWARE" in javascript
+
+
+def test_frontend_exposes_real_hardware_and_data_controls():
+    html = (FRONTEND / "index.html").read_text(encoding="utf-8")
+    javascript = (FRONTEND / "app.js").read_text(encoding="utf-8")
+    for route in ("/api/hardware/status", "/api/system/status", "/api/data/export", "/api/monitoring/sessions/"):
+        assert route in javascript
+    for control in ("settings-hardware", "settings-delivery", "export-data-button", "delete-session-button"):
+        assert control in html
+    assert "Provider-side messages cannot be recalled" in javascript

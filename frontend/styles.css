@@ -289,6 +289,13 @@ tbody tr:hover { background: #fbfdfc; }
 .status-chip-muted { background: #eef1f2; color: var(--muted); }
 .settings-safety { max-width: 800px; }
 .settings-safety > p { color: var(--ink-soft); font-size: .82rem; line-height: 1.65; max-width: 680px; }
+.data-management-panel { max-width: 920px; margin-bottom: 17px; }
+.data-controls { align-items: end; display: flex; flex-wrap: wrap; gap: 10px; }
+.data-controls label { margin: 0; }
+.data-controls select { background: #fbfdfc; border: 1px solid #cbdcda; border-radius: 9px; color: var(--ink); min-height: 42px; padding: 9px 12px; }
+.button-danger { background: var(--high-pale); border-color: #efc4c5; color: #8c3539; }
+.button-danger:hover { background: #f7dddd; }
+.button:disabled { cursor: not-allowed; opacity: .55; }
 
 /* Empty states */
 .empty-state { align-items: center; background: var(--surface); border: 1px dashed #b9d2cf; border-radius: var(--radius); display: flex; flex-direction: column; margin: 8px 0; padding: 65px 25px; text-align: center; }

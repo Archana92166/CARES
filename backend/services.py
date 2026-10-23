@@ -689,6 +689,122 @@ class CARESBackend:
             )
         ]
 
+    def export_user_data(self, user_id: int) -> dict[str, Any]:
+        """Return an ownership-scoped export without credentials or session tokens."""
+        user = self.user(user_id)
+        sessions = [
+            self.get_monitoring_session(user_id, row["id"])
+            for row in self.database.fetch_all(
+                "SELECT id FROM monitoring_sessions WHERE user_id = ? ORDER BY started_at",
+                (user_id,),
+            )
+        ]
+        events = [
+            self._decode_engine_event(row)
+            for row in self.database.fetch_all(
+                "SELECT * FROM engine_events WHERE user_id = ? ORDER BY id", (user_id,)
+            )
+        ]
+        locations = [
+            dict(row)
+            for row in self.database.fetch_all(
+                "SELECT * FROM location_events WHERE user_id = ? ORDER BY id", (user_id,)
+            )
+        ]
+        incidents = []
+        for row in self.database.fetch_all(
+            "SELECT * FROM incidents WHERE user_id = ? ORDER BY id", (user_id,)
+        ):
+            item = dict(row)
+            engine_row = self.database.fetch_one(
+                "SELECT * FROM engine_events WHERE id = ? AND user_id = ?",
+                (item["engine_event_id"], user_id),
+            )
+            item["engine_event"] = self._decode_engine_event(engine_row) if engine_row else None
+            item["location"] = (
+                self._location(item["location_event_id"], user_id)
+                if item["location_event_id"]
+                else None
+            )
+            item["actions"] = [
+                self._action_with_attempts(user_id, action)
+                for action in self.database.fetch_all(
+                    "SELECT * FROM guardian_action_events WHERE user_id = ? "
+                    "AND engine_event_id = ? ORDER BY id",
+                    (user_id, item["engine_event_id"]),
+                )
+            ]
+            incidents.append(item)
+        actions = [
+            self._action_with_attempts(user_id, row)
+            for row in self.database.fetch_all(
+                "SELECT * FROM guardian_action_events WHERE user_id = ? ORDER BY id",
+                (user_id,),
+            )
+        ]
+        return {
+            "format": "cares-user-export-v1",
+            "exported_at": utc_now(),
+            "user": user,
+            "guardians": self.list_guardians(user_id),
+            "monitoring_sessions": sessions,
+            "engine_events": events,
+            "incidents": incidents,
+            "actions": actions,
+            "locations": locations,
+            "baseline_daily_records": self.list_daily_records(user_id, limit=500),
+            "baseline_adaptation_events": self.list_adaptation_events(user_id, limit=500),
+        }
+
+    def delete_monitoring_session(
+        self, user_id: int, session_id: str, confirm: object = False
+    ) -> dict[str, Any]:
+        """Delete one stopped, user-owned monitoring session and its records."""
+        if confirm is not True:
+            raise ValidationError("Explicit confirmation is required to delete a monitoring session.")
+        session = self.get_monitoring_session(user_id, session_id)
+        if session["status"] == "ACTIVE":
+            raise ConflictError("Stop the monitoring session before deleting it.")
+        with self.database.transaction() as connection:
+            counts = {}
+            for table in (
+                "incidents", "guardian_action_events", "engine_events",
+                "location_events", "baseline_daily_records",
+                "baseline_adaptation_events",
+            ):
+                cursor = connection.execute(
+                    f"DELETE FROM {table} WHERE user_id = ? AND session_id = ?",
+                    (user_id, session_id),
+                )
+                counts[table] = cursor.rowcount
+            connection.execute(
+                "DELETE FROM monitoring_sessions WHERE id = ? AND user_id = ?",
+                (session_id, user_id),
+            )
+        with self._engine_lock:
+            self._engines.pop((user_id, session_id), None)
+        with self._hardware_lock:
+            self._hardware_streams = {
+                key: stream
+                for key, stream in self._hardware_streams.items()
+                if not (stream.session_id == session_id)
+            }
+        self.events.publish(
+            user_id,
+            {"type": "monitoring_session_deleted", "data": {"session_id": session_id}},
+        )
+        return {"session_id": session_id, "deleted": True, "counts": counts}
+
+    def system_status(self, user_id: int) -> dict[str, Any]:
+        """Expose operational state without secrets or provider credentials."""
+        _validate_user_id(self.database, user_id)
+        return {
+            "live_actions_enabled": self.external_actions_enabled,
+            "sms_provider": "configured" if self.sms_provider is not None else "unconfigured",
+            "voice_provider": "configured" if self.voice_provider is not None else "unconfigured",
+            "public_safety_dispatch": False,
+        }
+
     def discard_runtime(self, user_id: int, session_id: str) -> None:
         """Drop the in-memory engine so calibration cannot cross sessions."""
         with self._engine_lock:

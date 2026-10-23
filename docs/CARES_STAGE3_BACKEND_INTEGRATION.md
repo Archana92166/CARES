@@ -68,6 +68,9 @@ CARES_HARDWARE_DEVICES={"device-id":{"user_id":7,"token":"deployment-secret"}}
 
 - `POST /api/hardware/ingest` remains the authenticated-device raw-BVP endpoint.
 - `GET /api/hardware/status` requires an application session.
+- `GET /api/system/status` reports provider configuration without secrets.
+- `GET /api/data/export` returns an ownership-scoped JSON export without password or session-token hashes.
+- `DELETE /api/monitoring/sessions/{id}` requires `{"confirm":true}` and only deletes a stopped, user-owned session.
 - `GET /api/actions` and `GET /api/actions/{id}` now include sanitized recipient-level `attempts`. Existing action and incident ownership filters remain in force.
 - `POST /api/provider/twilio/status` and `/api/provider/twilio/voice-status` accept only provider-signed callbacks when configured.
 - `POST /api/demo/*` remains disabled by the production server unless `CARES_ENABLE_DEMO=1`; WESAD and synthetic fixtures remain for test/offline evaluation only.
@@ -88,7 +91,7 @@ Using `/tmp/cares-stage1-venv`:
 /tmp/cares-stage1-venv/bin/python -m pytest -q tests/test_stage3_actions.py tests/test_hardware_ingestion.py tests/test_backend.py tests/test_guardian_actions.py tests/test_invalid_input.py tests/test_risk_engine.py
   57 passed in 14.46s
 /tmp/cares-stage1-venv/bin/python -m pytest -q
-  91 passed in 64.07s
+  94 passed in 62.48s
 python -m compileall -q backend guardian engine
   passed (exit 0)
 git diff --check

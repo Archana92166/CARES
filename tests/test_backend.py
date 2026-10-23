@@ -160,6 +160,74 @@ def test_api_auth_guardian_and_dashboard_routes(tmp_path):
     assert current.body["engine_event"] is None
 
 
+def test_export_and_scoped_session_deletion_require_ownership_and_confirmation(tmp_path):
+    backend = make_backend(tmp_path)
+    user = backend.register("Alice", "alice@example.com", "correct horse")
+    guardian = backend.add_guardian(user["id"], "Guardian", "+919876543210", "parent")
+    backend.ingest_location(user["id"], {
+        "latitude": 12.3, "longitude": 76.6, "timestamp": 309.0, "source": "hardware-gps",
+    })
+    backend.persist_engine_output(user["id"], high_output())
+    session = backend.list_monitoring_sessions(user["id"])[0]
+    api = CARESAPI(backend)
+    _, token = backend.login("alice@example.com", "correct horse")
+    headers = {"Authorization": f"Bearer {token}"}
+
+    other = backend.register("Other", "other@example.com", "password-two")
+    other_session = backend.start_monitoring_session(other["id"], source="REAL_HARDWARE")
+    backend.stop_monitoring_session(other["id"], other_session["id"])
+    cross_user = api.handle(
+        "DELETE", f"/api/monitoring/sessions/{other_session['id']}",
+        {"confirm": True}, headers,
+    )
+    assert cross_user.status == 404
+
+    exported = api.handle("GET", "/api/data/export", headers=headers)
+    assert exported.status == 200
+    export = exported.body["export"]
+    assert export["user"]["id"] == user["id"]
+    assert export["guardians"][0]["id"] == guardian["id"]
+    assert export["engine_events"]
+    assert "password_hash" not in str(export)
+    assert "token_hash" not in str(export)
+
+    assert api.handle(
+        "DELETE", f"/api/monitoring/sessions/{session['id']}",
+        {"confirm": True}, headers,
+    ).status == 409
+    backend.stop_monitoring_session(user["id"], session["id"])
+    missing_confirmation = api.handle(
+        "DELETE", f"/api/monitoring/sessions/{session['id']}",
+        {}, headers,
+    )
+    assert missing_confirmation.status == 422
+    deleted = api.handle(
+        "DELETE", f"/api/monitoring/sessions/{session['id']}",
+        {"confirm": True}, headers,
+    )
+    assert deleted.status == 200
+    assert backend.history(user["id"]) == []
+    assert backend.list_incidents(user["id"]) == []
+    assert backend.list_guardians(user["id"])[0]["id"] == guardian["id"]
+
+
+def test_system_status_is_secret_free_and_reports_unconfigured_actions(tmp_path):
+    backend = make_backend(tmp_path)
+    user = backend.register("Alice", "alice@example.com", "correct horse")
+    api = CARESAPI(backend)
+    _, token = backend.login("alice@example.com", "correct horse")
+    response = api.handle(
+        "GET", "/api/system/status", headers={"Authorization": f"Bearer {token}"}
+    )
+    assert response.status == 200
+    status = response.body["status"]
+    assert status["live_actions_enabled"] is False
+    assert status["sms_provider"] == "unconfigured"
+    assert status["voice_provider"] == "unconfigured"
+    assert status["public_safety_dispatch"] is False
+    assert "auth_token" not in str(status).lower()
+
+
 def test_action_status_is_explicitly_updated(tmp_path):
     backend = make_backend(tmp_path)
     user = backend.register("Alice", "alice@example.com", "correct horse")

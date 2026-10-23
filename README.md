@@ -167,10 +167,12 @@ The engine output maps directly to software action commands defined in `guardian
 
 ## Hardware Status & Validation Disclaimer
 
-> **IMPORTANT NOTICE ON CLINICAL & HARDWARE STATUS:**  
-> Hardware components (such as ESP32 microcontrollers or MAX30102 PPG sensors) have **NOT** yet been integrated into this release.  
-> **The current implementation is software-in-the-loop and does not constitute clinical validation or real-device validation.**  
-> All thresholds provided in `engine/config.py` are algorithm and simulation parameters intended for software verification and research prototyping.
+> **IMPORTANT NOTICE ON CLINICAL & HARDWARE STATUS:**
+> CARES includes a documented, authenticated raw-BVP Wi-Fi receiver for an ESP32/MAX30102 installation. The repository does not contain the physical firmware or wiring, so no physical-device test is claimed.
+> **This implementation is not clinically validated and is not a diagnostic or public-safety dispatch system.**
+> All thresholds provided in `engine/config.py` are algorithm and evaluation parameters intended for software verification and research prototyping.
+
+The supported path is: ESP32 packet → `/api/hardware/ingest` → bounded BVP buffer → `WristBVPHREstimator` → `PhysiologicalSample` → existing `CARESDecisionEngine` → SQLite/API/SSE/UI. Device tokens, session ownership, sequence numbers, connection epochs, and optional location freshness are validated at the backend boundary. See `docs/CARES_STAGE2_HARDWARE_INTEGRATION.md` and `docs/CARES_STAGE3_BACKEND_INTEGRATION.md` for the deployment contract.
 
 ---
 
@@ -205,11 +207,12 @@ print(output.to_dict())
 ## Limitations & Future Integration Roadmap
 
 ### Current Limitations
-1. **Software-in-the-Loop Input**: Input measurements are synthetically generated or replayed from scenario files.
-2. **Single Physiological Signal**: Currently models heart rate (bpm) as the primary sensor stream (extensible via `additional_metrics`).
-3. **Simulated GPS Location**: Location payload uses a software stub contract.
+1. **Physical device validation**: The receiver and estimator path are tested with synthetic packets; wiring, sensor placement, radio behavior, and firmware are not validated here.
+2. **Single physiological signal**: The supported live path uses raw BVP to derive heart rate; additional metrics remain extensible through `additional_metrics`.
+3. **External action uncertainty**: Twilio submissions can become `UNKNOWN` after an ambiguous timeout or crash; no provider-side exactly-once guarantee is claimed.
+4. **WESAD availability**: Official WESAD files are not committed. Offline evaluation and demo use remain clearly separate from `REAL_HARDWARE`.
 
-### Future Roadmap (Post Milestone 1)
-- **MAX30102 / ESP32 Hardware Integration**: Direct Bluetooth/Wi-Fi ingestion from physical PPG sensor hardware.
-- **Multimodal Sensing**: Integration of Electrodermal Activity (EDA / Skin Conductance) and IMU motion data.
-- **Mobile UI & Live Guardian Portal**: Real-time Flutter / React Native user interface consuming the JSON `EngineOutput` contracts.
+### Future Roadmap
+- **Multimodal sensing**: Integration of EDA and IMU data after a separately reviewed contract.
+- **Provider reconciliation**: Add provider-specific reconciliation where supported without blindly retrying ambiguous requests.
+- **Deployment hardening**: TLS termination, secret-manager integration, operational retention policy, and physical-device acceptance testing.
