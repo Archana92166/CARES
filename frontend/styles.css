@@ -136,8 +136,19 @@ input:focus { background: #fff; border-color: var(--teal); box-shadow: 0 0 0 3px
 .panel-heading h2 { font-size: 1.15rem; }
 .panel-mark { color: var(--teal); font-size: 1.35rem; }
 .panel-intro { color: var(--ink-soft); font-size: .8rem; margin: -8px 0 20px; }
-.demo-control-panel { align-items: center; display: flex; gap: 25px; justify-content: space-between; margin-bottom: 17px; }
-.demo-control-panel > div:first-child { min-width: 0; }
+.demo-control-panel {
+  grid-template-columns: minmax(0, 1fr);
+  align-items: start;
+}
+
+.demo-controls {
+  justify-content: flex-start;
+  width: 100%;
+}
+
+.demo-control-panel .demo-controls select {
+  flex: 1 1 200px;
+}
 .demo-controls { align-items: center; display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
 .demo-controls select { background: var(--paper); border: 1px solid var(--line); border-radius: 9px; color: var(--ink); font-size: .75rem; font-weight: 700; min-height: 42px; padding: 8px 11px; }
 .demo-controls select:focus { border-color: var(--teal); outline: none; }
