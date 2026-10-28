@@ -167,22 +167,35 @@
     }
   }
 
+
   function connectRealtime() {
     state.eventSource?.close();
+
     const source = new EventSource("/api/events/stream");
     state.eventSource = source;
+
     source.onopen = () => {
       state.realtimeConnected = true;
       updateConnection(true);
     };
+
     source.onerror = () => {
       state.realtimeConnected = false;
       updateConnection(false);
     };
-    source.onmessage = (message) => {
-      try { handleRealtime(JSON.parse(message.data)); } catch (_) { /* Ignore malformed stream frames. */ }
+
+    const handleStreamMessage = (message) => {
+      try {
+        handleRealtime(JSON.parse(message.data));
+      } catch (_) {
+        // Ignore malformed stream frames.
+      }
     };
+
+    source.addEventListener("cares", handleStreamMessage);
+    source.onmessage = handleStreamMessage;
   }
+
 
   function handleRealtime(event) {
     if (!event || !event.type) return;
