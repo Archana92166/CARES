@@ -152,17 +152,20 @@ class CARESBackend:
             self._engines.pop((user_id, session_id), None)
 
     # ------------------------------ accounts ------------------------------
-
     def register(self, name: Any, email: Any, password: Any) -> dict[str, Any]:
         name = str(name or "").strip()
         email = str(email or "").strip().lower()
+
         if not 1 <= len(name) <= 120:
             raise ValidationError("Name must contain 1-120 characters.")
+
         if not EMAIL_OR_USERNAME.fullmatch(email):
             raise ValidationError("Email/username is invalid.")
+
         if not isinstance(password, str) or not 8 <= len(password) <= 256:
             raise ValidationError("Password must contain 8-256 characters.")
-               try:
+
+        try:
             cursor = self.database.execute(
                 "INSERT INTO users(name, email, password_hash, created_at) "
                 "VALUES (?, ?, ?, ?)",
@@ -183,20 +186,7 @@ class CARESBackend:
             raise
 
         return self.user(cursor.lastrowid)
-except Exception as exc:
-    error_text = str(exc).lower()
-
-    if (
-        "unique constraint failed" in error_text
-        or "duplicate key value violates unique constraint"
-        in error_text
-    ):
-        raise ConflictError(
-            "An account with that email/username already exists."
-        ) from exc
-
-    raise
-        return self.user(cursor.lastrowid)
+    
 
     def user(self, user_id: int) -> dict[str, Any]:
         row = self.database.fetch_one(
