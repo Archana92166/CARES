@@ -30,7 +30,6 @@ def test_frontend_consumes_engine_contract_without_threshold_logic():
         "/api/demo/start",
         "/api/demo/stop",
         "/api/demo/status",
-        "DEMO_WESAD",
         "DEMO_SYNTHETIC",
         "session_id",
     ):
@@ -63,6 +62,8 @@ def test_frontend_exposes_demo_controls_and_safe_demo_location_state():
     assert "Hardware location unavailable in demonstration mode" in javascript
     assert "DEMO BASELINE" in javascript
     assert "REAL HARDWARE" in javascript
+    assert "WESAD" not in html
+    assert "WESAD" not in javascript
 
 
 def test_frontend_exposes_real_hardware_and_data_controls():

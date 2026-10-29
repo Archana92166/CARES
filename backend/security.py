@@ -46,9 +46,9 @@ def _token_hash(token: str) -> str:
 
 
 class SessionStore:
-    def __init__(self, database: Database, ttl_seconds: int = 86_400) -> None:
+    def __init__(self, database: Database, ttl_seconds: int = 2_592_000) -> None:
         self.database = database
-        self.ttl_seconds = ttl_seconds
+        self.ttl_seconds = max(300, int(ttl_seconds))
 
     def create(self, user_id: int) -> str:
         token = secrets.token_urlsafe(32)

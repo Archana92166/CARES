@@ -200,6 +200,44 @@ sample = PhysiologicalSample(timestamp=30.0, heart_rate_bpm=115.0)
 output = engine.process_sample(sample)
 print(output.to_dict())
 "
+
+## Running the website and switching modes
+
+Start the local server from any working directory:
+
+```bash
+python -m backend.server --host 127.0.0.1 --port 8000
+```
+
+The default SQLite file is the stable project path `data/cares.sqlite3`, resolved relative to the repository rather than the shell's current directory. Set `CARES_DB_PATH` to an absolute path when deploying. The schema uses `CREATE TABLE IF NOT EXISTS` plus additive migrations, so startup does not recreate users or history.
+
+After signing in, the top-bar selector always shows the selected mode:
+
+- **Live Hardware Mode** reads only `REAL_HARDWARE` engine events, the authenticated device status, persisted sensor readings, and hardware GPS. The panel labels readings as sensor readings and reports `FRESH`, `STALE`, or `UNAVAILABLE`.
+- **Demo Mode** starts an explicitly labelled `DEMO_*` monitoring session. `NORMAL` uses WESAD if installed and otherwise uses a controlled synthetic normal stream; `SUSTAINED_HIGH` is the presentation scenario that must satisfy the real CARES engine's configured persistence/confidence rules before showing HIGH. Demo data never uses the hardware ingestion route or hardware tables.
+
+Demo guardian actions are shown as `SIMULATED GUARDIAN NOTIFICATION` when live providers are disabled. A real provider is only reported as delivered after the provider callback confirms `DELIVERED`; generated, queued, submitted, failed, and unknown states are not presented as delivery.
+
+Useful environment variables:
+
+```text
+CARES_DB_PATH=/absolute/persistent/path/cares.sqlite3
+CARES_SESSION_TTL_SECONDS=2592000
+CARES_COOKIE_SECURE=1                 # use behind HTTPS
+CARES_ENABLE_DEMO=1
+CARES_DEMO_CONTINUOUS=1
+CARES_HARDWARE_DEVICES={"esp32-max30100":{"user_id":7,"token":"deployment-secret"}}
+# Or for one device: CARES_DEVICE_TOKEN=... plus CARES_HARDWARE_USER_ID=7
+CARES_ENABLE_LIVE_ACTIONS=0
+```
+
+The browser receives only an HttpOnly session cookie; passwords and device tokens are not stored in browser storage or frontend JavaScript. The device token is accepted only by `POST /api/hardware/ingest` through `X-CARES-Device-Token` (or the compatible `X-Device-Token` header) and is never returned by status APIs. The single-device environment fallback uses `CARES_DEVICE_TOKEN`, `CARES_HARDWARE_USER_ID`, and optional `CARES_HARDWARE_DEVICE_ID`.
+
+The repository currently contains the backend raw-BVP receiver and related test fixtures, but no `integrate_cares_hardware.py` or ESP32 sketch was present in the inspected checkout. The receiver remains backward-compatible with raw BVP and additionally accepts validated precomputed `heart_rate_bpm` plus optional `spo2_percent` readings from a MAX30100-style device. Both forms still pass HR through the existing risk engine.
+
+### Deployment persistence limitation
+
+Local persistence is configured when the server uses `CARES_DB_PATH` or the repository default. Render's ordinary service filesystem is ephemeral across redeploys/restarts unless a persistent disk is attached and mounted. The repository cannot claim deployed cloud persistence from code alone: configure a Render persistent disk and point `CARES_DB_PATH` at its mount path, or migrate the persistence layer to a managed PostgreSQL service. Without that deployment configuration, local records may disappear after a Render restart even though the application schema is correct.
 ```
 
 ---

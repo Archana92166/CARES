@@ -17,11 +17,13 @@
     sessions: [],
     system: null,
     demo: { active: false, session: null },
+    selectedMode: "LIVE",
     page: "dashboard",
     eventSource: null,
+    pollTimer: null,
+    loading: false,
     realtimeConnected: false,
   };
-  const DEMO_SOURCES = ["DEMO_WESAD", "DEMO_SYNTHETIC"];
   const SESSION_ID_FIELD = "session_id";
 
   const $ = (selector, root = document) => root.querySelector(selector);
@@ -103,6 +105,8 @@
   function showAuth(tab = "login") {
     state.eventSource?.close();
     state.eventSource = null;
+    window.clearInterval(state.pollTimer);
+    state.pollTimer = null;
     $("#auth-view").classList.remove("is-hidden");
     $("#app-view").classList.add("is-hidden");
     $$("[data-auth-tab]").forEach((button) => {
@@ -126,6 +130,8 @@
     $("#settings-created").textContent = timestamp(user.created_at);
     loadData();
     connectRealtime();
+    window.clearInterval(state.pollTimer);
+    state.pollTimer = window.setInterval(() => loadData(), 8000);
   }
 
   function notify(message) {
@@ -137,13 +143,17 @@
   }
 
   async function loadData() {
+    if (state.loading) return;
+    state.loading = true;
     try {
+      const source = selectedSource();
+      const sourceQuery = encodeURIComponent(source);
       const results = await Promise.all([
-        request("/api/dashboard/current"),
-        request("/api/dashboard/history?limit=100"),
-        request("/api/baseline/current"),
-        request("/api/baseline/daily?limit=100"),
-        request("/api/baseline/adaptation?limit=100"),
+        request(`/api/dashboard/current?source=${sourceQuery}`),
+        request(`/api/dashboard/history?limit=100&source=${sourceQuery}`),
+        request(`/api/baseline/current?source=${sourceQuery}`),
+        request(`/api/baseline/daily?limit=100&source=${sourceQuery}`),
+        request(`/api/baseline/adaptation?limit=100&source=${sourceQuery}`),
         request("/api/incidents?limit=100"),
         request("/api/guardian"),
         request("/api/location/latest"),
@@ -173,7 +183,14 @@
       } else {
         notify(`CARES could not load this workspace: ${error.message}`);
       }
+    } finally {
+      state.loading = false;
     }
+  }
+
+  function selectedSource() {
+    if (state.selectedMode === "LIVE") return "REAL_HARDWARE";
+    return state.demo?.source?.startsWith("DEMO_") ? state.demo.source : "DEMO_SYNTHETIC";
   }
 
   function connectRealtime() {
@@ -196,6 +213,7 @@
   function handleRealtime(event) {
     if (!event || !event.type) return;
     if (event.type === "engine_output" && event.data) {
+      if (event.data.source !== selectedSource()) return;
       state.current = { ...(state.current || {}), engine_event: event.data };
       state.history = [event.data, ...state.history.filter((item) => item.id !== event.data.id)].slice(0, 100);
       refreshSecondaryData();
@@ -220,8 +238,9 @@
 
   async function refreshSecondaryData() {
     try {
+      const sourceQuery = encodeURIComponent(selectedSource());
       const [current, incidents, actions, location, hardware, system] = await Promise.all([
-        request("/api/dashboard/current"), request("/api/incidents?limit=100"), request("/api/actions?limit=100"), request("/api/location/latest"),
+        request(`/api/dashboard/current?source=${sourceQuery}`), request("/api/incidents?limit=100"), request("/api/actions?limit=100"), request("/api/location/latest"),
         request("/api/hardware/status"), request("/api/system/status"),
       ]);
       state.current = current;
@@ -265,6 +284,8 @@
     renderGuardians();
     renderSettings();
     renderDemo();
+    renderMode();
+    renderHardwarePanel();
   }
 
   function currentEvent() {
@@ -313,6 +334,47 @@
     document.body.dataset.risk = String(event.risk_level || "");
   }
 
+  function renderMode() {
+    const demo = state.selectedMode === "DEMO";
+    const selector = $("#mode-selector");
+    if (selector) selector.value = state.selectedMode;
+    $("#mode-indicator")?.classList.toggle("mode-demo", demo);
+    $("#mode-indicator")?.classList.toggle("mode-live", !demo);
+    if ($("#mode-indicator")) $("#mode-indicator").textContent = demo ? "DEMO / SIMULATED" : "LIVE HARDWARE";
+    $("#demo-control-panel")?.classList.toggle("is-hidden", !demo);
+    $("#demo-control-panel")?.setAttribute("aria-hidden", String(!demo));
+    $("#hardware-live-panel")?.classList.toggle("is-hidden", demo);
+  }
+
+  function renderHardwarePanel() {
+    const device = state.hardware?.[0];
+    const reading = device?.latest_reading;
+    const freshness = device?.reading_freshness || "UNAVAILABLE";
+    const freshElement = $("#hardware-freshness");
+    if (freshElement) {
+      freshElement.textContent = freshness;
+      freshElement.className = `status-chip ${freshness === "FRESH" ? "status-chip-good" : "status-chip-muted"}`;
+    }
+    $("#hardware-heart-rate").textContent = reading ? `${number(reading.heart_rate_bpm, 1)}` : "—";
+    $("#hardware-spo2").textContent = reading?.spo2_percent == null ? "—" : number(reading.spo2_percent, 1);
+    const location = state.location;
+    $("#hardware-location").textContent = location ? `${number(location.latitude, 6)}, ${number(location.longitude, 6)}` : "Unavailable";
+    $("#hardware-location-time").textContent = location ? `GPS · ${timestamp(location.timestamp)}` : "No GPS reading";
+    $("#hardware-reading-time").textContent = reading ? timestamp(reading.timestamp) : "—";
+    const transport = device?.transport_status || "DISCONNECTED";
+    const connection = freshness === "STALE" ? "Hardware connected, latest reading is stale" : transport;
+    $("#hardware-connection").textContent = connection;
+    const event = currentEvent();
+    $("#hardware-risk-status").textContent = event?.source === "REAL_HARDWARE"
+      ? `${riskDescriptor(event.risk_level).label} · ${event.explanation || "No explanation returned"}`
+      : "No trusted hardware engine event yet";
+    const actions = (state.actions || []).filter((action) => action.source === "REAL_HARDWARE");
+    const latestAction = actions[0];
+    $("#hardware-guardian-status").textContent = latestAction
+      ? `${latestAction.action_type} · ${latestAction.status}`
+      : "No hardware guardian alert recorded";
+  }
+
   function renderDemo() {
     const demo = state.demo || { active: false };
     const active = Boolean(demo.active);
@@ -328,7 +390,15 @@
     $("#demo-source").textContent = `Data source: ${demo.source || "—"} · Monitoring status: ${active ? "ACTIVE" : "STOPPED"} · Session: ${sessionId}`;
     const description = demo.input_description || "Choose a scenario. The demo produces physiological samples only; the existing CARES engine decides every output.";
     $("#demo-description").textContent = description;
+    const demoActions = (state.actions || []).filter((action) => String(action.source || "").startsWith("DEMO_"));
+    const demoAlert = demoActions.find((action) => ["GUARDIAN_NOTIFICATION", "GUARDIAN_COMMUNICATION", "EMERGENCY_ALERT"].includes(action.action_type));
+    if ($("#demo-guardian-status")) {
+      if (!demoAlert) $("#demo-guardian-status").textContent = "Guardian alert status: no demo alert generated yet.";
+      else if (state.system?.live_actions_enabled) $("#demo-guardian-status").textContent = `Guardian alert status: ${demoAlert.status}. Provider delivery is only confirmed by DELIVERED.`;
+      else $("#demo-guardian-status").textContent = "Guardian alert status: SIMULATED GUARDIAN NOTIFICATION — live delivery is disabled; no real message was sent.";
+    }
     $("#monitoring-status-dot")?.classList.toggle("status-dot-muted", !active);
+    renderMode();
   }
 
   function actionAttemptSummary(action) {
@@ -339,7 +409,9 @@
 
   function renderActions() {
     const eventActions = currentEvent()?.recommended_actions || [];
-    const actions = (state.actions && state.actions.length) ? state.actions : eventActions.map((action) => ({ action_type: action, status: "GENERATED", timestamp: currentEvent()?.timestamp, engine_event_id: currentEvent()?.id }));
+    const source = selectedSource();
+    const scopedActions = (state.actions || []).filter((action) => !action.source || action.source === source);
+    const actions = scopedActions.length ? scopedActions : eventActions.map((action) => ({ action_type: action, status: "GENERATED", timestamp: currentEvent()?.timestamp, engine_event_id: currentEvent()?.id, source }));
     const html = actions.slice(0, 8).map((action) => `<div class="action-row"><span class="action-name"><span class="action-symbol">${action.status === "DELIVERED" ? "✓" : "·"}</span><span>${escapeHTML(actionLabel(action.action_type))}</span></span><span class="action-status status-${escapeHTML(String(action.status || "GENERATED").toLowerCase())}">${escapeHTML(action.status || "GENERATED")}</span></div>`).join("");
     const content = html || '<div class="empty-inline">No guardian actions recorded yet.</div>';
     $("#dashboard-actions").innerHTML = content;
@@ -347,10 +419,10 @@
   }
 
   function renderLocation() {
-    const location = state.location;
+    const location = state.selectedMode === "DEMO" ? null : state.location;
     $("#settings-gps").textContent = location ? "Connected" : "Not connected";
     if (!location) {
-      const unavailable = state.demo?.active || String(currentEvent()?.source || "").startsWith("DEMO_") ? "Hardware location unavailable in demonstration mode." : "Hardware location unavailable.";
+      const unavailable = state.selectedMode === "DEMO" ? "Hardware location unavailable in demonstration mode." : "Hardware location unavailable.";
       $("#dashboard-location").innerHTML = `<div class="empty-inline">${escapeHTML(unavailable)}</div>`;
       $("#location-details").innerHTML = '<div class="empty-inline">No hardware location event has been received.</div>';
       $("#map-container").innerHTML = '<div class="map-empty"><span>⌖</span><p>Map unavailable until hardware coordinates arrive.</p></div>';
@@ -380,11 +452,13 @@
     const event = currentEvent();
     const baseline = state.baseline;
     $("#baseline-large").textContent = baseline ? number(baseline.baseline, 1) : (event ? number(event.baseline, 1) : "—");
-    const calibrating = event?.reason_codes?.includes("BASELINE_CALIBRATING");
-    $("#baseline-status").textContent = calibrating ? "Calibrating" : (baseline ? "Ready" : "Not available");
-    $("#baseline-status").className = `tag ${calibrating ? "tag-medium" : baseline ? "tag-low" : "tag-muted"}`;
+    const backendStatus = baseline?.status;
+    const calibrating = backendStatus === "CALIBRATING" || event?.reason_codes?.includes("BASELINE_CALIBRATING");
+    const baselineStatus = backendStatus || (calibrating ? "CALIBRATING" : baseline ? "READY" : "NOT_READY");
+    $("#baseline-status").textContent = baselineStatus;
+    $("#baseline-status").className = `tag ${baselineStatus === "READY" ? "tag-low" : baselineStatus === "CALIBRATING" ? "tag-medium" : "tag-muted"}`;
     $("#baseline-kicker").textContent = String(event?.source || "").startsWith("DEMO_") ? "DEMO BASELINE" : "PERSONAL BASELINE — REAL HARDWARE";
-    $("#calibration-label").textContent = baseline?.status ? `${baseline.status}${baseline.calibration_progress === null ? "" : ` · ${number(baseline.calibration_progress, 0)}%`}` : (calibrating ? "Calibration in progress" : "Awaiting engine history");
+    $("#calibration-label").textContent = `${baselineStatus}${baseline?.calibration_progress == null ? "" : ` · ${number(baseline.calibration_progress, 0)}%`}`;
     $("#calibration-bar").style.width = baseline?.calibration_progress === null || baseline?.calibration_progress === undefined ? "0%" : `${Math.max(0, Math.min(100, Number(baseline.calibration_progress)))}%`;
     $("#trusted-samples").textContent = baseline?.trusted_samples ?? (state.daily[0]?.trusted_samples ?? "—");
     $("#baseline-deviation").textContent = event ? `${signedNumber(event.deviation, 1)} BPM` : "—";
@@ -628,6 +702,7 @@
       const payload = await request("/api/demo/start", { method: "POST", body: { scenario: $("#demo-scenario").value } });
       state.demo = payload.demo;
       renderDemo();
+      await loadData();
       notify(`Demo started: ${payload.demo.source}. Every decision is produced by CARES.`);
     } catch (error) {
       state.demo = { active: false, error: error.message };
@@ -661,6 +736,11 @@
     $("#demo-stop").addEventListener("click", stopDemo);
     $("#export-data-button").addEventListener("click", exportData);
     $("#delete-session-button").addEventListener("click", deleteSelectedSession);
+    $("#mode-selector").addEventListener("change", async (event) => {
+      state.selectedMode = event.target.value === "DEMO" ? "DEMO" : "LIVE";
+      renderMode();
+      await loadData();
+    });
     $("#data-session-select").addEventListener("change", renderSettings);
     document.addEventListener("click", (event) => {
       const pageButton = event.target.closest("[data-page]");

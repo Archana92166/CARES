@@ -10,6 +10,10 @@ from pathlib import Path
 from typing import Iterator, Optional, Sequence
 
 
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_DATABASE_PATH = PROJECT_ROOT / "data" / "cares.sqlite3"
+
+
 SCHEMA = """
 PRAGMA foreign_keys = ON;
 
@@ -166,6 +170,18 @@ CREATE TABLE IF NOT EXISTS baseline_adaptation_events (
     source TEXT NOT NULL DEFAULT 'REAL_HARDWARE'
 );
 
+CREATE TABLE IF NOT EXISTS hardware_readings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    session_id TEXT NOT NULL REFERENCES monitoring_sessions(id) ON DELETE CASCADE,
+    device_id TEXT NOT NULL,
+    timestamp REAL NOT NULL,
+    received_at REAL NOT NULL,
+    heart_rate_bpm REAL NOT NULL,
+    spo2_percent REAL,
+    source TEXT NOT NULL DEFAULT 'REAL_HARDWARE'
+);
+
 CREATE INDEX IF NOT EXISTS idx_engine_events_user_time
     ON engine_events(user_id, id DESC);
 CREATE INDEX IF NOT EXISTS idx_actions_user_time
@@ -178,6 +194,10 @@ CREATE INDEX IF NOT EXISTS idx_action_attempts_action
     ON action_attempts(action_id, id DESC);
 CREATE INDEX IF NOT EXISTS idx_adaptation_user_time
     ON baseline_adaptation_events(user_id, id DESC);
+CREATE INDEX IF NOT EXISTS idx_hardware_readings_user_time
+    ON hardware_readings(user_id, id DESC);
+CREATE INDEX IF NOT EXISTS idx_hardware_readings_device_time
+    ON hardware_readings(device_id, id DESC);
 """
 
 
@@ -188,9 +208,14 @@ def utc_now() -> str:
 class Database:
     """Thread-safe SQLite connection with the CARES schema."""
 
-    def __init__(self, path: str = "data/cares.sqlite3") -> None:
-        self.path = Path(path)
-        if str(self.path) != ":memory:":
+    def __init__(self, path: str | Path | None = None) -> None:
+        raw_path = DEFAULT_DATABASE_PATH if path is None else path
+        if str(raw_path) == ":memory:":
+            self.path = Path(":memory:")
+        else:
+            candidate = Path(raw_path)
+            self.path = candidate if candidate.is_absolute() else PROJECT_ROOT / candidate
+            self.path = self.path.resolve()
             self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
         self.connection = sqlite3.connect(

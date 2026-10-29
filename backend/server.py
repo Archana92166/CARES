@@ -13,6 +13,7 @@ from typing import Any
 from urllib.parse import parse_qs, unquote, urlsplit
 
 from .api import CARESAPI
+from .db import DEFAULT_DATABASE_PATH
 from .services import CARESBackend
 
 
@@ -161,7 +162,7 @@ class CARESThreadingServer(ThreadingHTTPServer):
         super().server_close()
 
 
-def create_server(host: str = "127.0.0.1", port: int = 8000, db_path: str = "data/cares.sqlite3") -> CARESThreadingServer:
+def create_server(host: str = "127.0.0.1", port: int = 8000, db_path: str | None = None) -> CARESThreadingServer:
     backend = CARESBackend(db_path=db_path)
     return CARESThreadingServer((host, port), backend)
 
@@ -170,7 +171,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Run the CARES backend server.")
     parser.add_argument("--host", default=os.getenv("CARES_HOST", "127.0.0.1"))
     parser.add_argument("--port", type=int, default=int(os.getenv("CARES_PORT", "8000")))
-    parser.add_argument("--db", default=os.getenv("CARES_DB_PATH", "data/cares.sqlite3"))
+    parser.add_argument("--db", default=os.getenv("CARES_DB_PATH", str(DEFAULT_DATABASE_PATH)))
     args = parser.parse_args()
     server = create_server(args.host, args.port, args.db)
     print(f"CARES backend listening on http://{args.host}:{args.port}")

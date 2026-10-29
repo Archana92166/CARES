@@ -20,6 +20,8 @@ SUPPORTED_PROTOCOL_VERSION = "1.0"
 DEFAULT_SAMPLING_RATE_HZ = 64.0
 DEFAULT_STALE_TIMEOUT_SECONDS = 15.0
 MAX_BVP_SAMPLES_PER_PACKET = 4096
+MIN_SPO2_PERCENT = 50.0
+MAX_SPO2_PERCENT = 100.0
 MAX_DEVICE_ID_LENGTH = 128
 MAX_LOCATION_TIMESTAMP_SKEW_SECONDS = 30.0
 # Location timestamps use the same device clock as device_timestamp_start.
@@ -44,7 +46,7 @@ class HardwareLocationPacket:
 
 @dataclass(frozen=True)
 class HardwarePacket:
-    """Validated version 1 raw-BVP packet. Device time is in seconds."""
+    """Validated version 1 packet with raw-BVP or precomputed sensor readings."""
 
     protocol_version: str
     device_id: str
@@ -53,6 +55,8 @@ class HardwarePacket:
     device_timestamp_start: float
     sampling_rate_hz: float
     bvp_samples: tuple[float, ...]
+    heart_rate_bpm: Optional[float] = None
+    spo2_percent: Optional[float] = None
     session_id: Optional[str] = None
     location: Optional[HardwareLocationPacket] = None
 
@@ -116,7 +120,12 @@ class HardwarePacket:
             )
 
         raw_samples = data.get("bvp_samples")
-        if (
+        has_precomputed_hr = "heart_rate_bpm" in data
+        if raw_samples is None and not has_precomputed_hr:
+            raise HardwarePacketError(
+                "Provide bvp_samples or a precomputed heart_rate_bpm reading."
+            )
+        if raw_samples is not None and (
             not isinstance(raw_samples, list)
             or not raw_samples
             or len(raw_samples) > MAX_BVP_SAMPLES_PER_PACKET
@@ -125,7 +134,7 @@ class HardwarePacket:
                 f"bvp_samples must contain 1-{MAX_BVP_SAMPLES_PER_PACKET} values."
             )
         samples: list[float] = []
-        for value in raw_samples:
+        for value in raw_samples or []:
             if (
                 isinstance(value, bool)
                 or not isinstance(value, (int, float))
@@ -133,6 +142,30 @@ class HardwarePacket:
             ):
                 raise HardwarePacketError("bvp_samples must contain finite numeric values.")
             samples.append(float(value))
+
+        heart_rate = data.get("heart_rate_bpm")
+        if heart_rate is not None:
+            if (
+                isinstance(heart_rate, bool)
+                or not isinstance(heart_rate, (int, float))
+                or not math.isfinite(float(heart_rate))
+                or not 30.0 <= float(heart_rate) <= 220.0
+            ):
+                raise HardwarePacketError("heart_rate_bpm must be finite and within 30-220 BPM.")
+            heart_rate = float(heart_rate)
+
+        spo2 = data.get("spo2_percent")
+        if spo2 is not None:
+            if (
+                isinstance(spo2, bool)
+                or not isinstance(spo2, (int, float))
+                or not math.isfinite(float(spo2))
+                or not MIN_SPO2_PERCENT <= float(spo2) <= MAX_SPO2_PERCENT
+            ):
+                raise HardwarePacketError("spo2_percent must be finite and within 50-100%.")
+            spo2 = float(spo2)
+        if heart_rate is None and spo2 is not None:
+            raise HardwarePacketError("spo2_percent requires heart_rate_bpm or bvp_samples.")
 
         session_id = data.get("session_id")
         if session_id is not None and (
@@ -196,6 +229,8 @@ class HardwarePacket:
             device_timestamp_start=float(timestamp),
             sampling_rate_hz=float(sampling_rate),
             bvp_samples=tuple(samples),
+            heart_rate_bpm=heart_rate,
+            spo2_percent=spo2,
             session_id=session_id.strip() if session_id is not None else None,
             location=location,
         )
@@ -243,6 +278,11 @@ class HardwareStreamState:
     status: str = "DISCONNECTED"
     transport_epoch: int = 0
     last_error: Optional[str] = None
+    latest_heart_rate_bpm: Optional[float] = None
+    latest_spo2_percent: Optional[float] = None
+    latest_reading_at: Optional[float] = None
+    latest_reading_received_at: Optional[float] = None
+    latest_reading_source: Optional[str] = None
 
     def reset_evidence_epoch(self) -> None:
         """Discard incomplete BVP/estimator continuity for a new epoch."""

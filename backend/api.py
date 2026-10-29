@@ -47,11 +47,19 @@ class CARESAPI:
         secure_cookie: bool = False,
         demo_controller: Optional[DemoController] = None,
         demo_enabled: bool = True,
+        session_cookie_max_age: Optional[int] = None,
     ) -> None:
         self.backend = backend
         self.secure_cookie = secure_cookie
         self.demo_enabled = bool(demo_enabled)
-        self.demo_controller = demo_controller or DemoController(backend)
+        self.demo_controller = demo_controller or DemoController(
+            backend,
+            continuous=os.getenv("CARES_DEMO_CONTINUOUS", "1") == "1",
+        )
+        self.session_cookie_max_age = max(
+            300,
+            int(session_cookie_max_age if session_cookie_max_age is not None else os.getenv("CARES_SESSION_TTL_SECONDS", "2592000")),
+        )
 
     def authenticate_request(self, headers: Mapping[str, str]) -> int:
         authorization = next(
@@ -87,7 +95,7 @@ class CARESAPI:
             return 201, {"user": self.backend.register(body.get("name"), body.get("email"), body.get("password"))}, {}
         if path == "/api/auth/login" and method == "POST":
             user, token = self.backend.login(body.get("email"), body.get("password"))
-            cookie = f"cares_session={token}; HttpOnly; SameSite=Lax; Path=/"
+            cookie = f"cares_session={token}; Max-Age={self.session_cookie_max_age}; HttpOnly; SameSite=Lax; Path=/"
             if self.secure_cookie:
                 cookie += "; Secure"
             return 200, {"user": user}, {"Set-Cookie": cookie}
@@ -154,6 +162,8 @@ class CARESAPI:
                     user_id, query.get("device_id", [None])[0]
                 )
             }, {}
+        if path == "/api/hardware/readings" and method == "GET":
+            return 200, {"readings": self.backend.hardware_readings(self._user(headers), self._limit(query))}, {}
 
         # Guardian contacts
         if path == "/api/guardian" and method == "GET":
@@ -169,30 +179,27 @@ class CARESAPI:
 
         # Dashboard and baseline read models
         if path == "/api/dashboard/current" and method == "GET":
-            current = self.backend.get_current(user_id)
+            current = self.backend.get_current(user_id, source=query.get("source", [None])[0])
             current["demo"] = (
                 self.demo_controller.status(user_id)
                 if self.demo_enabled
                 else {"active": False, "source": "REAL_HARDWARE_ONLY"}
             )
-            if current["demo"].get("active"):
-                current["location"] = None
             return 200, current, {}
         if path == "/api/dashboard/history" and method == "GET":
             return 200, {"events": self.backend.history(user_id, self._limit(query), query.get("session_id", [None])[0], query.get("source", [None])[0])}, {}
         if path == "/api/baseline/current" and method == "GET":
-            return 200, {"baseline": self.backend.baseline_current(user_id)}, {}
+            return 200, {"baseline": self.backend.baseline_current(user_id, source=query.get("source", [None])[0])}, {}
         if path == "/api/baseline/daily" and method == "GET":
-            return 200, {"records": self.backend.list_daily_records(user_id, self._limit(query))}, {}
+            return 200, {"records": self.backend.list_daily_records(user_id, self._limit(query), query.get("source", [None])[0])}, {}
         if path == "/api/baseline/adaptation" and method == "GET":
-            return 200, {"events": self.backend.list_adaptation_events(user_id, self._limit(query))}, {}
+            return 200, {"events": self.backend.list_adaptation_events(user_id, self._limit(query), query.get("source", [None])[0])}, {}
 
         # Location
         if path == "/api/location" and method == "POST":
             return 201, {"location": self.backend.ingest_location(user_id, body)}, {}
         if path == "/api/location/latest" and method == "GET":
-            demo = self.demo_controller.status(user_id) if self.demo_enabled else {"active": False}
-            return 200, {"location": None if demo.get("active") else self.backend.latest_location(user_id)}, {}
+            return 200, {"location": self.backend.latest_location(user_id)}, {}
 
         # Actions
         if path == "/api/actions" and method == "GET":

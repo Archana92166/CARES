@@ -54,10 +54,12 @@ class DemoSampleAdapter:
         wesad_dir: str = "data/wesad",
         seed: int = 42,
         sample_limit: int = 360,
+        fallback_to_synthetic: bool = False,
     ) -> None:
         self.wesad_dir = Path(wesad_dir)
         self.seed = seed
         self.sample_limit = max(301, int(sample_limit))
+        self.fallback_to_synthetic = bool(fallback_to_synthetic)
 
     def create(self, scenario: str) -> DemoStream:
         try:
@@ -74,6 +76,17 @@ class DemoSampleAdapter:
     def _official_wesad_stream(self, scenario: DemoScenario) -> DemoStream:
         pickle_path = self.wesad_dir / "S2" / "S2.pkl"
         if not pickle_path.is_file():
+            if self.fallback_to_synthetic:
+                stream = self._synthetic_stream(scenario)
+                return DemoStream(
+                    scenario=scenario,
+                    source=stream.source,
+                    samples=stream.samples,
+                    input_description=(
+                        "WESAD is not installed in this checkout; using controlled synthetic normal physiology. "
+                        "This is DEMO/SIMULATED data, not hardware."
+                    ),
+                )
             raise DemoInputUnavailable(
                 "official WESAD wrist data is unavailable at data/wesad/S2/S2.pkl. "
                 "NORMAL WESAD demonstration cannot start."
@@ -144,13 +157,15 @@ class DemoController:
         backend: CARESBackend,
         adapter: Optional[DemoSampleAdapter] = None,
         interval_seconds: Optional[float] = None,
+        continuous: bool = False,
     ) -> None:
         self.backend = backend
-        self.adapter = adapter or DemoSampleAdapter()
+        self.adapter = adapter or DemoSampleAdapter(fallback_to_synthetic=True)
         configured = interval_seconds
         if configured is None:
             configured = float(os.getenv("CARES_DEMO_INTERVAL_SECONDS", "0.02"))
         self.interval_seconds = max(0.001, float(configured))
+        self.continuous = bool(continuous)
         self._runs: dict[int, _DemoRun] = {}
         self._last_status: dict[int, dict[str, object]] = {}
         self._lock = threading.RLock()
@@ -230,16 +245,19 @@ class DemoController:
         if run is None:
             return
         try:
-            for sample in run.stream:
-                if run.stop_event.wait(self.interval_seconds):
+            while not run.stop_event.is_set():
+                for sample in run.stream:
+                    if run.stop_event.wait(self.interval_seconds):
+                        break
+                    self.backend.process_sample(
+                        user_id,
+                        sample,
+                        session_id=session_id,
+                        source=run.stream.source,
+                    )
+                    run.sample_count += 1
+                if not self.continuous:
                     break
-                self.backend.process_sample(
-                    user_id,
-                    sample,
-                    session_id=session_id,
-                    source=run.stream.source,
-                )
-                run.sample_count += 1
         except Exception as exc:  # surfaced through status, never silently swallowed
             run.last_error = str(exc)
         finally:

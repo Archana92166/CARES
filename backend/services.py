@@ -104,7 +104,7 @@ class CARESBackend:
     def __init__(
         self,
         database: Database | None = None,
-        db_path: str = "data/cares.sqlite3",
+        db_path: str | None = None,
         geocoder: ReverseGeocoder | None = None,
         engine_factory: Callable[[], CARESDecisionEngine] = CARESDecisionEngine,
         hardware_devices: Optional[Mapping[str, Mapping[str, Any]]] = None,
@@ -120,9 +120,16 @@ class CARESBackend:
         max_action_retries: int = 2,
         action_retry_backoff_seconds: float = 30.0,
         action_claim_timeout_seconds: float = 300.0,
+        session_ttl_seconds: Optional[int] = None,
     ) -> None:
         self.database = database or Database(db_path)
-        self.sessions = SessionStore(self.database)
+        self.sessions = SessionStore(
+            self.database,
+            ttl_seconds=(
+                int(os.getenv("CARES_SESSION_TTL_SECONDS", "2592000"))
+                if session_ttl_seconds is None else int(session_ttl_seconds)
+            ),
+        )
         self.geocoder = geocoder or ReverseGeocoder()
         self.engine_factory = engine_factory
         self._engines: dict[tuple[int, str], CARESDecisionEngine] = {}
@@ -752,6 +759,7 @@ class CARESBackend:
             "incidents": incidents,
             "actions": actions,
             "locations": locations,
+            "hardware_readings": self.hardware_readings(user_id, limit=500),
             "baseline_daily_records": [
                 dict(row)
                 for row in self.database.fetch_all(
@@ -782,7 +790,7 @@ class CARESBackend:
             for table in (
                 "incidents", "guardian_action_events", "engine_events",
                 "location_events", "baseline_daily_records",
-                "baseline_adaptation_events",
+                "baseline_adaptation_events", "hardware_readings",
             ):
                 cursor = connection.execute(
                     f"DELETE FROM {table} WHERE user_id = ? AND session_id = ?",
@@ -835,11 +843,22 @@ class CARESBackend:
         if configured is None:
             raw = os.getenv("CARES_HARDWARE_DEVICES", "")
             if not raw:
-                return
-            try:
-                configured = json.loads(raw)
-            except json.JSONDecodeError as exc:
-                raise ValueError("CARES_HARDWARE_DEVICES must be valid JSON.") from exc
+                token = os.getenv("CARES_DEVICE_TOKEN", "").strip()
+                user_id = os.getenv("CARES_HARDWARE_USER_ID", "").strip()
+                if token and user_id:
+                    configured = {
+                        os.getenv("CARES_HARDWARE_DEVICE_ID", "esp32-cares").strip(): {
+                            "user_id": user_id,
+                            "token": token,
+                        }
+                    }
+                else:
+                    return
+            else:
+                try:
+                    configured = json.loads(raw)
+                except json.JSONDecodeError as exc:
+                    raise ValueError("CARES_HARDWARE_DEVICES must be valid JSON.") from exc
         if not isinstance(configured, Mapping):
             raise ValueError("Hardware devices must be a device_id mapping.")
         for device_id, values in configured.items():
@@ -866,8 +885,8 @@ class CARESBackend:
         self,
         headers: Mapping[str, str],
     ) -> HardwareDevice:
-        device_id = self._header(headers, "X-CARES-Device-Id")
-        token = self._header(headers, "X-CARES-Device-Token")
+        device_id = self._header(headers, "X-CARES-Device-Id") or self._header(headers, "X-Device-Id")
+        token = self._header(headers, "X-CARES-Device-Token") or self._header(headers, "X-Device-Token")
         if not device_id or not token:
             raise AuthenticationError("Hardware device credentials are required.")
         device = self._hardware_devices.get(device_id.strip())
@@ -981,37 +1000,67 @@ class CARESBackend:
             stream.last_received_at = now
             stream.status = "CONNECTED"
             stream.last_error = None
-            stream.append(packet.bvp_samples)
-
-            window = stream.window()
-            if window is None:
-                return self._hardware_response(
-                    stream, packet, reconnected=reconnected, estimate=None, engine_output=None
+            estimate = None
+            if packet.heart_rate_bpm is not None:
+                # MAX30100/NEO-6M installations may send trusted, precomputed
+                # readings. The backend still validates bounds and routes HR
+                # through the existing engine; it never assigns risk here.
+                estimate_timestamp = packet.device_timestamp_start
+                stream.latest_heart_rate_bpm = packet.heart_rate_bpm
+                stream.latest_spo2_percent = packet.spo2_percent
+                stream.latest_reading_at = estimate_timestamp
+                stream.latest_reading_received_at = now
+                stream.latest_reading_source = "PRECOMPUTED_SENSOR_READING"
+                sample = PhysiologicalSample(
+                    timestamp=estimate_timestamp,
+                    heart_rate_bpm=packet.heart_rate_bpm,
+                    additional_metrics={
+                        "hr_valid": 1.0,
+                        "bvp_quality": 1.0,
+                        **({"spo2_percent": packet.spo2_percent} if packet.spo2_percent is not None else {}),
+                    },
                 )
+            else:
+                stream.append(packet.bvp_samples)
+                window = stream.window()
+                if window is None:
+                    return self._hardware_response(
+                        stream, packet, reconnected=reconnected, estimate=None, engine_output=None
+                    )
 
-            estimate_timestamp = packet.device_timestamp_start + (len(packet.bvp_samples) - 1) / packet.sampling_rate_hz
-            estimate = stream.estimator.estimate_window(window, timestamp=estimate_timestamp)
-            stream.advance_window()
-            if not estimate.accepted:
-                stream.status = "RECEIVING_DATA"
-                return self._hardware_response(
-                    stream, packet, reconnected=reconnected, estimate=estimate.to_dict(), engine_output=None
+                estimate_timestamp = packet.device_timestamp_start + (len(packet.bvp_samples) - 1) / packet.sampling_rate_hz
+                estimate = stream.estimator.estimate_window(window, timestamp=estimate_timestamp)
+                stream.advance_window()
+                if not estimate.accepted:
+                    stream.status = "RECEIVING_DATA"
+                    return self._hardware_response(
+                        stream, packet, reconnected=reconnected, estimate=estimate.to_dict(), engine_output=None
+                    )
+                stream.latest_heart_rate_bpm = estimate.heart_rate_bpm
+                stream.latest_spo2_percent = None
+                stream.latest_reading_at = estimate.timestamp
+                stream.latest_reading_received_at = now
+                stream.latest_reading_source = "RAW_BVP_ESTIMATE"
+                sample = PhysiologicalSample(
+                    timestamp=estimate.timestamp,
+                    heart_rate_bpm=estimate.heart_rate_bpm,
+                    additional_metrics={
+                        "hr_valid": 1.0,
+                        "bvp_quality": estimate.quality,
+                    },
                 )
-
-            sample = PhysiologicalSample(
-                timestamp=estimate.timestamp,
-                heart_rate_bpm=estimate.heart_rate_bpm,
-                additional_metrics={
-                    "hr_valid": 1.0 if estimate.accepted else 0.0,
-                    "bvp_quality": estimate.quality,
-                },
-            )
             output = self.process_sample(
                 device.user_id, sample, session_id=session["id"], source="REAL_HARDWARE"
             )
+            self._persist_hardware_reading(
+                device.user_id, session["id"], packet.device_id,
+                sample.timestamp, now, sample.heart_rate_bpm, packet.spo2_percent,
+            )
             stream.status = "RECEIVING_DATA"
             return self._hardware_response(
-                stream, packet, reconnected=reconnected, estimate=estimate.to_dict(), engine_output=output
+                stream, packet, reconnected=reconnected,
+                estimate=estimate.to_dict() if estimate is not None else None,
+                engine_output=output,
             )
 
     def _validate_packet_location(
@@ -1073,7 +1122,25 @@ class CARESBackend:
             "samples_buffered": len(stream.buffer),
             "estimate": estimate,
             "engine_output": engine_output,
+            "reading": {
+                "heart_rate_bpm": stream.latest_heart_rate_bpm,
+                "spo2_percent": stream.latest_spo2_percent,
+                "timestamp": stream.latest_reading_at,
+                "source": stream.latest_reading_source,
+            } if stream.latest_reading_at is not None else None,
         }
+
+    def _persist_hardware_reading(
+        self, user_id: int, session_id: str, device_id: str, timestamp: float,
+        received_at: float, heart_rate_bpm: float, spo2_percent: Optional[float],
+    ) -> dict[str, Any]:
+        cursor = self.database.execute(
+            "INSERT INTO hardware_readings(user_id, session_id, device_id, timestamp, received_at, heart_rate_bpm, spo2_percent, source) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, 'REAL_HARDWARE')",
+            (user_id, session_id, device_id, timestamp, received_at, heart_rate_bpm, spo2_percent),
+        )
+        row = self.database.fetch_one("SELECT * FROM hardware_readings WHERE id = ?", (cursor.lastrowid,))
+        return dict(row) if row else {}
 
     def hardware_status(self, user_id: int, device_id: Optional[str] = None) -> list[dict[str, Any]]:
         _validate_user_id(self.database, user_id)
@@ -1092,6 +1159,12 @@ class CARESBackend:
                 stream = max(streams, key=lambda item: item.last_received_at or 0.0, default=None)
                 if stream is not None:
                     self._mark_hardware_stale(stream, now)
+                latest = self._latest_hardware_reading(user_id, device.device_id)
+                reading_age = None
+                freshness = "UNAVAILABLE"
+                if latest is not None:
+                    reading_age = max(0.0, now - float(latest["received_at"]))
+                    freshness = "FRESH" if reading_age <= self.hardware_stale_timeout_seconds else "STALE"
                 result.append({
                     "device_id": device.device_id,
                     "transport_status": stream.status if stream else "DISCONNECTED",
@@ -1104,8 +1177,27 @@ class CARESBackend:
                     "transport_epoch": stream.transport_epoch if stream else 0,
                     "stale_timeout_seconds": self.hardware_stale_timeout_seconds,
                     "last_error": stream.last_error if stream else None,
+                    "latest_reading": latest,
+                    "reading_age_seconds": reading_age,
+                    "reading_freshness": freshness,
                 })
             return result
+
+    def _latest_hardware_reading(self, user_id: int, device_id: str) -> Optional[dict[str, Any]]:
+        row = self.database.fetch_one(
+            "SELECT id, session_id, device_id, timestamp, received_at, heart_rate_bpm, spo2_percent, source "
+            "FROM hardware_readings WHERE user_id = ? AND device_id = ? ORDER BY id DESC LIMIT 1",
+            (user_id, device_id),
+        )
+        return dict(row) if row else None
+
+    def hardware_readings(self, user_id: int, limit: int = 100) -> list[dict[str, Any]]:
+        _validate_user_id(self.database, user_id)
+        limit = max(1, min(int(limit), 500))
+        return [dict(row) for row in self.database.fetch_all(
+            "SELECT id, session_id, device_id, timestamp, received_at, heart_rate_bpm, spo2_percent, source "
+            "FROM hardware_readings WHERE user_id = ? ORDER BY id DESC LIMIT ?", (user_id, limit)
+        )]
 
     # ------------------------------ accounts ------------------------------
 
@@ -1334,8 +1426,8 @@ class CARESBackend:
             self.events.publish(user_id, {"type": "incident", "data": self.get_incident(user_id, incident_id)})
         return event
 
-    def get_current(self, user_id: int) -> dict[str, Any]:
-        event = self._engine_event_for_user(user_id)
+    def get_current(self, user_id: int, source: Optional[str] = None) -> dict[str, Any]:
+        event = self._engine_event_for_user(user_id, source=source)
         session = self.get_monitoring_session(user_id, event["session_id"]) if event else None
         return {
             "engine_event": event,
@@ -1367,9 +1459,15 @@ class CARESBackend:
         )
         return [self._decode_engine_event(row) for row in rows]
 
-    def _engine_event_for_user(self, user_id: int) -> Optional[dict[str, Any]]:
+    def _engine_event_for_user(self, user_id: int, source: Optional[str] = None) -> Optional[dict[str, Any]]:
         _validate_user_id(self.database, user_id)
-        row = self.database.fetch_one("SELECT * FROM engine_events WHERE user_id = ? ORDER BY id DESC LIMIT 1", (user_id,))
+        if source:
+            row = self.database.fetch_one(
+                "SELECT * FROM engine_events WHERE user_id = ? AND source = ? ORDER BY id DESC LIMIT 1",
+                (user_id, str(source).upper()),
+            )
+        else:
+            row = self.database.fetch_one("SELECT * FROM engine_events WHERE user_id = ? ORDER BY id DESC LIMIT 1", (user_id,))
         return self._decode_engine_event(row) if row else None
 
     def _engine_event(self, event_id: int, user_id: int) -> dict[str, Any]:
@@ -1582,10 +1680,14 @@ class CARESBackend:
         row = self.database.fetch_one("SELECT * FROM baseline_daily_records WHERE user_id = ? AND date = ?", (user_id, data["date"]))
         return dict(row)
 
-    def list_daily_records(self, user_id: int, limit: int = 100) -> list[dict[str, Any]]:
+    def list_daily_records(self, user_id: int, limit: int = 100, source: Optional[str] = None) -> list[dict[str, Any]]:
         _validate_user_id(self.database, user_id)
         limit = max(1, min(int(limit), 500))
-        return [dict(row) for row in self.database.fetch_all("SELECT * FROM baseline_daily_records WHERE user_id = ? ORDER BY date DESC LIMIT ?", (user_id, limit))]
+        if source:
+            rows = self.database.fetch_all("SELECT * FROM baseline_daily_records WHERE user_id = ? AND source = ? ORDER BY date DESC LIMIT ?", (user_id, str(source).upper(), limit))
+        else:
+            rows = self.database.fetch_all("SELECT * FROM baseline_daily_records WHERE user_id = ? ORDER BY date DESC LIMIT ?", (user_id, limit))
+        return [dict(row) for row in rows]
 
     def persist_adaptation_event(self, user_id: int, record: Any) -> dict[str, Any]:
         _validate_user_id(self.database, user_id)
@@ -1604,13 +1706,17 @@ class CARESBackend:
         row = self.database.fetch_one("SELECT * FROM baseline_adaptation_events WHERE id = ? AND user_id = ?", (cursor.lastrowid, user_id))
         return dict(row)
 
-    def list_adaptation_events(self, user_id: int, limit: int = 100) -> list[dict[str, Any]]:
+    def list_adaptation_events(self, user_id: int, limit: int = 100, source: Optional[str] = None) -> list[dict[str, Any]]:
         _validate_user_id(self.database, user_id)
         limit = max(1, min(int(limit), 500))
-        return [dict(row) for row in self.database.fetch_all("SELECT * FROM baseline_adaptation_events WHERE user_id = ? ORDER BY id DESC LIMIT ?", (user_id, limit))]
+        if source:
+            rows = self.database.fetch_all("SELECT * FROM baseline_adaptation_events WHERE user_id = ? AND source = ? ORDER BY id DESC LIMIT ?", (user_id, str(source).upper(), limit))
+        else:
+            rows = self.database.fetch_all("SELECT * FROM baseline_adaptation_events WHERE user_id = ? ORDER BY id DESC LIMIT ?", (user_id, limit))
+        return [dict(row) for row in rows]
 
-    def baseline_current(self, user_id: int) -> Optional[dict[str, Any]]:
-        event = self._engine_event_for_user(user_id)
+    def baseline_current(self, user_id: int, source: Optional[str] = None) -> Optional[dict[str, Any]]:
+        event = self._engine_event_for_user(user_id, source=source)
         if event is None:
             return None
         snapshot: dict[str, Any] = {
