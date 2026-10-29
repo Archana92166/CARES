@@ -162,11 +162,27 @@ class CARESBackend:
             raise ValidationError("Email/username is invalid.")
         if not isinstance(password, str) or not 8 <= len(password) <= 256:
             raise ValidationError("Password must contain 8-256 characters.")
-        try:
+               try:
             cursor = self.database.execute(
-                "INSERT INTO users(name, email, password_hash, created_at) VALUES (?, ?, ?, ?)",
+                "INSERT INTO users(name, email, password_hash, created_at) "
+                "VALUES (?, ?, ?, ?)",
                 (name, email, hash_password(password), utc_now()),
             )
+        except Exception as exc:
+            error_text = str(exc).lower()
+
+            if (
+                "unique constraint failed" in error_text
+                or "duplicate key value violates unique constraint"
+                in error_text
+            ):
+                raise ConflictError(
+                    "An account with that email/username already exists."
+                ) from exc
+
+            raise
+
+        return self.user(cursor.lastrowid)
 except Exception as exc:
     error_text = str(exc).lower()
 
