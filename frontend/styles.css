@@ -136,11 +136,66 @@ input:focus { background: #fff; border-color: var(--teal); box-shadow: 0 0 0 3px
 .panel-heading h2 { font-size: 1.15rem; }
 .panel-mark { color: var(--teal); font-size: 1.35rem; }
 .panel-intro { color: var(--ink-soft); font-size: .8rem; margin: -8px 0 20px; }
-.demo-control-panel { align-items: center; display: flex; gap: 25px; justify-content: space-between; margin-bottom: 17px; }
-.demo-control-panel > div:first-child { min-width: 0; }
-.demo-controls { align-items: center; display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
-.demo-controls select { background: var(--paper); border: 1px solid var(--line); border-radius: 9px; color: var(--ink); font-size: .75rem; font-weight: 700; min-height: 42px; padding: 8px 11px; }
-.demo-controls select:focus { border-color: var(--teal); outline: none; }
+.demo-control-panel {
+  align-items: center;
+  display: flex;
+  gap: 25px;
+  justify-content: space-between;
+  margin-bottom: 17px;
+}
+
+.demo-control-panel > div:first-child {
+  flex: 1 1 420px;
+  min-width: 0;
+}
+
+.demo-control-panel h2 {
+  line-height: 1.25;
+  margin: 0 0 8px;
+}
+
+.demo-control-panel .panel-intro {
+  color: var(--ink-soft);
+  font-size: 0.8rem;
+  line-height: 1.55;
+  margin: 0 0 12px;
+  max-width: 640px;
+}
+
+.demo-control-panel .metric-caption {
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.demo-controls {
+  align-items: center;
+  display: flex;
+  flex: 0 1 auto;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+  min-width: 0;
+}
+
+.demo-controls select {
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  color: var(--ink);
+  flex: 1 1 220px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  max-width: 100%;
+  min-height: 42px;
+  min-width: 0;
+  padding: 8px 11px;
+}
+
+.demo-controls select:focus {
+  border-color: var(--teal);
+  outline: none;
+}
+
 .demo-status { color: var(--ink-soft); font-size: .7rem; font-weight: 800; min-width: 78px; text-align: right; }
 .demo-status.is-active { color: var(--low); }
 .demo-status.is-error { color: var(--high); }
