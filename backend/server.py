@@ -20,6 +20,11 @@ from .services import CARESBackend
 FRONTEND_ROOT = Path(__file__).resolve().parent.parent / "frontend"
 
 
+def demo_routes_enabled() -> bool:
+    """Return the explicit environment policy for presentation demo routes."""
+    return os.getenv("CARES_ENABLE_DEMO", "0") == "1"
+
+
 class CARESRequestHandler(BaseHTTPRequestHandler):
     server_version = "CARESBackend/1.0"
 
@@ -152,7 +157,7 @@ class CARESThreadingServer(ThreadingHTTPServer):
         self.api = CARESAPI(
             backend,
             secure_cookie=os.getenv("CARES_COOKIE_SECURE", "0") == "1",
-            demo_enabled=os.getenv("CARES_ENABLE_DEMO", "0") == "1",
+            demo_enabled=demo_routes_enabled(),
         )
         super().__init__(address, CARESRequestHandler)
         backend.start_action_worker(float(os.getenv("CARES_ACTION_WORKER_INTERVAL_SECONDS", "2")))

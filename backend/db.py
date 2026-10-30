@@ -40,8 +40,23 @@ CREATE TABLE IF NOT EXISTS guardian_contacts (
     name TEXT NOT NULL,
     phone_number TEXT NOT NULL,
     relationship TEXT NOT NULL,
+    sms_enabled INTEGER NOT NULL DEFAULT 1,
+    voice_enabled INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS guardian_test_notifications (
+    id TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    guardian_id INTEGER NOT NULL REFERENCES guardian_contacts(id) ON DELETE CASCADE,
+    channel TEXT NOT NULL,
+    status TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    provider_reference TEXT,
+    failure_reason TEXT,
+    metadata TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS monitoring_sessions (
@@ -179,6 +194,11 @@ CREATE TABLE IF NOT EXISTS hardware_readings (
     received_at REAL NOT NULL,
     heart_rate_bpm REAL NOT NULL,
     spo2_percent REAL,
+    signal_quality REAL,
+    measurement_valid INTEGER NOT NULL DEFAULT 1,
+    measurement_status TEXT NOT NULL DEFAULT 'VALID',
+    sample_count INTEGER NOT NULL DEFAULT 0,
+    sampling_rate_hz REAL NOT NULL DEFAULT 64.0,
     source TEXT NOT NULL DEFAULT 'REAL_HARDWARE'
 );
 
@@ -261,6 +281,17 @@ class Database:
             "baseline_adaptation_events": {
                 "session_id": "TEXT NOT NULL DEFAULT 'legacy'",
                 "source": "TEXT NOT NULL DEFAULT 'REAL_HARDWARE'",
+            },
+            "guardian_contacts": {
+                "sms_enabled": "INTEGER NOT NULL DEFAULT 1",
+                "voice_enabled": "INTEGER NOT NULL DEFAULT 1",
+            },
+            "hardware_readings": {
+                "signal_quality": "REAL",
+                "measurement_valid": "INTEGER NOT NULL DEFAULT 1",
+                "measurement_status": "TEXT NOT NULL DEFAULT 'VALID'",
+                "sample_count": "INTEGER NOT NULL DEFAULT 0",
+                "sampling_rate_hz": "REAL NOT NULL DEFAULT 64.0",
             },
         }
         for table, columns in migrations.items():

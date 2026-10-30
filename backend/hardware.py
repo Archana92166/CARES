@@ -57,6 +57,8 @@ class HardwarePacket:
     bvp_samples: tuple[float, ...]
     heart_rate_bpm: Optional[float] = None
     spo2_percent: Optional[float] = None
+    signal_quality: Optional[float] = None
+    measurement_valid: Optional[bool] = None
     session_id: Optional[str] = None
     location: Optional[HardwareLocationPacket] = None
 
@@ -167,6 +169,21 @@ class HardwarePacket:
         if heart_rate is None and spo2 is not None:
             raise HardwarePacketError("spo2_percent requires heart_rate_bpm or bvp_samples.")
 
+        signal_quality = data.get("signal_quality")
+        if signal_quality is not None:
+            if (
+                isinstance(signal_quality, bool)
+                or not isinstance(signal_quality, (int, float))
+                or not math.isfinite(float(signal_quality))
+                or not 0.0 <= float(signal_quality) <= 1.0
+            ):
+                raise HardwarePacketError("signal_quality must be finite and within 0-1.")
+            signal_quality = float(signal_quality)
+
+        measurement_valid = data.get("measurement_valid")
+        if measurement_valid is not None and not isinstance(measurement_valid, bool):
+            raise HardwarePacketError("measurement_valid must be boolean when supplied.")
+
         session_id = data.get("session_id")
         if session_id is not None and (
             not isinstance(session_id, str) or not session_id.strip() or len(session_id) > 128
@@ -231,6 +248,8 @@ class HardwarePacket:
             bvp_samples=tuple(samples),
             heart_rate_bpm=heart_rate,
             spo2_percent=spo2,
+            signal_quality=signal_quality,
+            measurement_valid=measurement_valid,
             session_id=session_id.strip() if session_id is not None else None,
             location=location,
         )
@@ -283,6 +302,9 @@ class HardwareStreamState:
     latest_reading_at: Optional[float] = None
     latest_reading_received_at: Optional[float] = None
     latest_reading_source: Optional[str] = None
+    latest_signal_quality: Optional[float] = None
+    latest_measurement_valid: Optional[bool] = None
+    latest_measurement_status: str = "NO_READING"
 
     def reset_evidence_epoch(self) -> None:
         """Discard incomplete BVP/estimator continuity for a new epoch."""

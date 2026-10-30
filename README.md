@@ -178,6 +178,14 @@ The supported path is: ESP32 packet → `/api/hardware/ingest` → bounded BVP b
 
 ## Running Verification Tests
 
+Install the Python dependencies in a virtual environment:
+
+```bash
+cd /home/archana/Documents/CARES
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+```
+
 To execute the test suite using the CARES Python environment:
 
 ```bash
@@ -200,23 +208,43 @@ sample = PhysiologicalSample(timestamp=30.0, heart_rate_bpm=115.0)
 output = engine.process_sample(sample)
 print(output.to_dict())
 "
+```
 
 ## Running the website and switching modes
 
-Start the local server from any working directory:
+The backend serves the browser frontend from `frontend/`, so CARES uses one
+startup command. Enable the demo routes explicitly for a local presentation:
 
 ```bash
-python -m backend.server --host 127.0.0.1 --port 8000
+CARES_ENABLE_DEMO=1 CARES_ENABLE_LIVE_ACTIONS=0 \
+  /home/archana/Documents/CARES/.venv/bin/python -m backend.server \
+  --host 127.0.0.1 --port 8000
 ```
+
+Open `http://127.0.0.1:8000/` after the server starts. There is no separate
+frontend development server in this repository; the command above is the
+exact frontend/backend startup command and serves `frontend/index.html`,
+`frontend/app.js`, and `frontend/styles.css`. A hardware-only deployment can
+omit `CARES_ENABLE_DEMO=1`; the server disables demo routes by default.
+`.env.example` contains a non-secret configuration template; environment
+variables must be supplied by the operator and are not loaded automatically.
 
 The default SQLite file is the stable project path `data/cares.sqlite3`, resolved relative to the repository rather than the shell's current directory. Set `CARES_DB_PATH` to an absolute path when deploying. The schema uses `CREATE TABLE IF NOT EXISTS` plus additive migrations, so startup does not recreate users or history.
 
 After signing in, the top-bar selector always shows the selected mode:
 
 - **Live Hardware Mode** reads only `REAL_HARDWARE` engine events, the authenticated device status, persisted sensor readings, and hardware GPS. The panel labels readings as sensor readings and reports `FRESH`, `STALE`, or `UNAVAILABLE`.
-- **Demo Mode** starts an explicitly labelled `DEMO_*` monitoring session. `NORMAL` uses WESAD if installed and otherwise uses a controlled synthetic normal stream; `SUSTAINED_HIGH` is the presentation scenario that must satisfy the real CARES engine's configured persistence/confidence rules before showing HIGH. Demo data never uses the hardware ingestion route or hardware tables.
+- **Presentation Demo Mode** starts an explicitly labelled `DEMO_*` monitoring session. The selector supports `NORMAL`, `ELEVATED`, `SUSTAINED_HIGH`, and `RECOVERY`. `NORMAL` uses official WESAD wrist data when `data/wesad/S2/S2.pkl` is installed and otherwise uses the backend's controlled synthetic fallback. `SUSTAINED_HIGH` is the presentation scenario that must satisfy the real CARES engine's configured persistence/confidence rules before showing HIGH. Demo data never uses the hardware ingestion route, `REAL_HARDWARE` events, or hardware readings.
 
-Demo guardian actions are shown as `SIMULATED GUARDIAN NOTIFICATION` when live providers are disabled. A real provider is only reported as delivered after the provider callback confirms `DELIVERED`; generated, queued, submitted, failed, and unknown states are not presented as delivery.
+The demo panel displays the source, scenario, session, engine risk state,
+engine explanation, and guardian action state returned by the backend. Starting
+the same or another scenario is safe: the backend stops the user's prior demo
+run before creating a new isolated monitoring session. Switching back to Live
+Hardware Mode requests a demo stop when one is active, clears the selected
+view, and reloads only `REAL_HARDWARE` data. If stopping fails, the UI keeps
+the demo source isolated and reports the failure.
+
+Demo guardian actions are always shown as `SIMULATED GUARDIAN NOTIFICATION`; demo sessions never queue or dispatch real SMS or voice actions, even when live providers are configured. Hardware-triggered actions use the real provider workflow only when explicitly enabled. A real provider is only reported as delivered after the provider callback confirms `DELIVERED`; generated, queued, submitted, failed, and unknown states are not presented as delivery.
 
 Useful environment variables:
 
@@ -229,16 +257,93 @@ CARES_DEMO_CONTINUOUS=1
 CARES_HARDWARE_DEVICES={"esp32-max30100":{"user_id":7,"token":"deployment-secret"}}
 # Or for one device: CARES_DEVICE_TOKEN=... plus CARES_HARDWARE_USER_ID=7
 CARES_ENABLE_LIVE_ACTIONS=0
+CARES_SMS_PROVIDER=twilio
+CARES_SMS_ACCOUNT_SID=...
+CARES_SMS_AUTH_TOKEN=...
+CARES_SMS_FROM=...
+CARES_SMS_STATUS_CALLBACK_URL=https://your-host.example/api/provider/twilio/status
+CARES_VOICE_PROVIDER=twilio
+CARES_VOICE_ACCOUNT_SID=...
+CARES_VOICE_AUTH_TOKEN=...
+CARES_VOICE_FROM=...
+CARES_VOICE_STATUS_CALLBACK_URL=https://your-host.example/api/provider/twilio/voice-status
 ```
 
 The browser receives only an HttpOnly session cookie; passwords and device tokens are not stored in browser storage or frontend JavaScript. The device token is accepted only by `POST /api/hardware/ingest` through `X-CARES-Device-Token` (or the compatible `X-Device-Token` header) and is never returned by status APIs. The single-device environment fallback uses `CARES_DEVICE_TOKEN`, `CARES_HARDWARE_USER_ID`, and optional `CARES_HARDWARE_DEVICE_ID`.
 
 The repository currently contains the backend raw-BVP receiver and related test fixtures, but no `integrate_cares_hardware.py` or ESP32 sketch was present in the inspected checkout. The receiver remains backward-compatible with raw BVP and additionally accepts validated precomputed `heart_rate_bpm` plus optional `spo2_percent` readings from a MAX30100-style device. Both forms still pass HR through the existing risk engine.
 
+Hardware intake is `POST /api/hardware/ingest` with `X-Device-Token` or
+`X-CARES-Device-Token` authentication. The server validates ownership, packet
+sequence/connection state, finite and bounded sensor values, and optional GPS
+coordinates before processing the heart rate through the decision engine.
+The live panel shows only actual persisted hardware readings; missing SpO₂,
+GPS, disconnected devices, stale readings, insufficient windows, and poor
+signal remain explicitly unavailable. Optional `signal_quality` and
+`measurement_valid` fields from a precomputed sensor packet are validated; a
+poor or invalid packet cannot create an engine event or overwrite the last
+valid persisted reading. Raw-BVP estimates expose estimator quality and
+require the configured 64 Hz, 10-second (640-sample) window before a reading
+is produced. The reported 64 Hz value is the configured protocol rate, not a
+claim that the physical device has been measured at exactly 64 Hz.
+
 ### Deployment persistence limitation
 
 Local persistence is configured when the server uses `CARES_DB_PATH` or the repository default. Render's ordinary service filesystem is ephemeral across redeploys/restarts unless a persistent disk is attached and mounted. The repository cannot claim deployed cloud persistence from code alone: configure a Render persistent disk and point `CARES_DB_PATH` at its mount path, or migrate the persistence layer to a managed PostgreSQL service. Without that deployment configuration, local records may disappear after a Render restart even though the application schema is correct.
+
+The local database path is resolved relative to the repository (`data/cares.sqlite3`)
+and is initialized with non-destructive `CREATE TABLE IF NOT EXISTS` statements
+plus additive migrations. Authentication uses an HttpOnly persistent session
+cookie; the frontend does not store passwords, session tokens, or device tokens
+in browser storage. `NOT_READY`, `CALIBRATING`, and `READY` baseline states are
+derived from the backend's trusted engine history and remain source-filtered.
+
+Guardian actions are honest about delivery: `GENERATED` means no provider was
+configured, `QUEUED`/`SUBMITTED` indicate workflow progress, `FAILED` and
+`UNKNOWN` indicate uncertainty or failure, and only provider-confirmed
+`DELIVERED` is treated as delivery. With `CARES_ENABLE_LIVE_ACTIONS=0`, demo
+alerts are labelled simulated and no real SMS or voice action is sent.
+
+The Guardian page persists the contact name, country-code-capable phone number,
+relationship, and SMS/voice channel preferences. The **Test guardian delivery**
+control requires a separate confirmation and never invokes the risk engine. It
+records `SIMULATED` when live actions or a provider are unavailable, or reports
+the configured provider's actual `SUBMITTED`, `DELIVERED`, `FAILED`, or
+`UNKNOWN` result. The test message explicitly says that no emergency was
+detected.
+
+The current provider adapter is Twilio. Its SDK/API integration is not itself
+free message delivery: Twilio documents usage-based SMS charges, phone-number
+fees, and carrier fees, while its trial is limited and requires verified
+recipients. Voice is likewise usage-priced after trial allowances. No paid
+provider is enabled by default, and CARES does not add an unofficial SMS
+gateway or a hidden subscription. See the [Twilio messaging pricing](https://www.twilio.com/en-us/pricing/messaging),
+[Twilio voice pricing](https://www.twilio.com/en-us/voice/pricing/us), and
+[Twilio trial restrictions](https://www.twilio.com/docs/usage/trials).
+
+### Verification and known limitations
+
+Run the complete suite and the focused frontend checks with:
+
+```bash
+/home/archana/Documents/CARES/.venv/bin/pytest -q
+/home/archana/Documents/CARES/.venv/bin/pytest -q tests/test_frontend.py
+/home/archana/Documents/CARES/.venv/bin/pytest -q tests/test_frontend.py tests/test_demo_integration.py tests/test_persistence_and_live_hardware.py tests/test_personal_baseline.py
+node --check frontend/app.js
+git diff --check
 ```
+
+Verified in this checkout: the complete suite passed `108 tests`; the focused
+frontend/demo/persistence/baseline selection passed `27 tests`; `node --check
+frontend/app.js` passed; and `git diff --check` passed.
+
+The repository's automated tests verify backend validation, source/session
+separation, demo scenarios and engine outputs, SQLite reconnection persistence,
+session handling, baseline calibration, and the frontend mode contracts. They
+do not test a physical ESP32/MAX30100/NEO-6M device, deployed HTTPS transport,
+or real guardian-provider delivery. Render persistence requires a configured
+persistent disk mounted at `CARES_DB_PATH` (or a managed database); code alone
+cannot make Render's default ephemeral filesystem durable.
 
 ---
 

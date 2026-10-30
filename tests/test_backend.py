@@ -160,6 +160,38 @@ def test_api_auth_guardian_and_dashboard_routes(tmp_path):
     assert current.body["engine_event"] is None
 
 
+def test_guardian_test_endpoint_requires_confirmation_and_stays_outside_risk_workflow(tmp_path):
+    backend = make_backend(tmp_path)
+    api = CARESAPI(backend)
+    registered = api.handle("POST", "/api/auth/register", {
+        "name": "Alice", "email": "alice@example.com", "password": "correct horse"
+    })
+    login = api.handle("POST", "/api/auth/login", {
+        "email": "alice@example.com", "password": "correct horse"
+    })
+    token = login.headers["Set-Cookie"].split("=", 1)[1].split(";", 1)[0]
+    headers = {"Authorization": f"Bearer {token}"}
+    added = api.handle("POST", "/api/guardian", {
+        "name": "Guardian", "phone_number": "+919876543210", "relationship": "parent",
+        "sms_enabled": True, "voice_enabled": False,
+    }, headers)
+    guardian_id = added.body["guardian"]["id"]
+
+    rejected = api.handle("POST", "/api/guardian/test", {
+        "guardian_id": guardian_id, "channel": "sms", "confirm": False,
+    }, headers)
+    assert rejected.status == 422
+    sent = api.handle("POST", "/api/guardian/test", {
+        "guardian_id": guardian_id, "channel": "sms", "confirm": True,
+    }, headers)
+    assert sent.status == 202
+    assert sent.body["test"]["status"] == "SIMULATED"
+    assert backend.list_actions(registered.body["user"]["id"]) == []
+    listed = api.handle("GET", "/api/guardian/test?limit=20", headers=headers)
+    assert listed.status == 200
+    assert listed.body["tests"][0]["id"] == sent.body["test"]["id"]
+
+
 def test_export_and_scoped_session_deletion_require_ownership_and_confirmation(tmp_path):
     backend = make_backend(tmp_path)
     user = backend.register("Alice", "alice@example.com", "correct horse")

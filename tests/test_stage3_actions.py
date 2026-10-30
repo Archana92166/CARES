@@ -9,7 +9,7 @@ from backend import CARESBackend, Database
 from backend.action_providers import (
     ProviderError, ProviderResult, TwilioSmsProvider, configured_live_providers,
 )
-from backend.services import AuthenticationError, ConflictError, NotFoundError
+from backend.services import AuthenticationError, ConflictError, NotFoundError, ValidationError
 
 
 class FakeProvider:
@@ -57,6 +57,44 @@ def test_live_providers_are_disabled_without_explicit_configuration(monkeypatch)
     sms, voice = configured_live_providers()
     assert sms is None
     assert voice is None
+
+
+def test_guardian_channel_preferences_and_explicit_test_workflow():
+    backend, user = make_backend(None, None)
+    guardian = backend.add_guardian(
+        user["id"], "One", "+15550000001", "parent", sms_enabled=False, voice_enabled=True,
+    )
+    assert guardian["sms_enabled"] == 0
+    assert guardian["voice_enabled"] == 1
+    with pytest.raises(ValidationError):
+        backend.send_guardian_test(user["id"], guardian["id"], "sms", True)
+    with pytest.raises(ValidationError):
+        backend.send_guardian_test(user["id"], guardian["id"], "voice", False)
+    test = backend.send_guardian_test(user["id"], guardian["id"], "voice", True)
+    assert test["status"] == "SIMULATED"
+    assert test["channel"] == "voice"
+    assert backend.list_guardian_test_notifications(user["id"])[0]["id"] == test["id"]
+
+    provider = FakeProvider(ProviderResult("SUBMITTED", "test-ref"))
+    live_backend, live_user = make_backend(provider, None)
+    live_guardian = live_backend.add_guardian(live_user["id"], "Live", "+15550000002", "parent")
+    live_test = live_backend.send_guardian_test(live_user["id"], live_guardian["id"], "sms", True)
+    assert live_test["status"] == "SUBMITTED"
+    assert live_test["provider_reference"] == "test-ref"
+    assert "no emergency" in provider.calls[0][1].lower()
+
+
+def test_alert_message_contains_real_engine_context_and_map_link():
+    backend, user = make_backend(None, None)
+    backend.add_guardian(user["id"], "One", "+15550000001", "parent")
+    backend.persist_engine_output(user["id"], high_output())
+    action = next(item for item in backend.list_actions(user["id"]) if item["action_type"] == "GUARDIAN_NOTIFICATION")
+    message = backend._alert_message(action)
+    assert "CARES ALERT" in message
+    assert user["name"] in message
+    assert "HIGH" in message
+    assert "High risk" in message
+    assert "Please contact the person" in message
 
 def test_sms_and_voice_execution_is_recipient_specific_and_idempotent():
     sms = FakeProvider()

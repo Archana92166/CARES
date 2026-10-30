@@ -133,7 +133,9 @@ class CARESAPI:
         if path == "/api/demo/stop" and method == "POST":
             return 200, {"demo": self.demo_controller.stop(self._user(headers))}, {}
         if path == "/api/demo/status" and method == "GET":
-            return 200, {"demo": self.demo_controller.status(self._user(headers))}, {}
+            status = self.demo_controller.status(self._user(headers))
+            status["enabled"] = True
+            return 200, {"demo": status}, {}
         if path == "/api/monitoring/sessions" and method == "GET":
             return 200, {"sessions": self.backend.list_monitoring_sessions(self._user(headers), self._limit(query))}, {}
 
@@ -169,7 +171,16 @@ class CARESAPI:
         if path == "/api/guardian" and method == "GET":
             return 200, {"guardians": self.backend.list_guardians(user_id)}, {}
         if path == "/api/guardian" and method == "POST":
-            return 201, {"guardian": self.backend.add_guardian(user_id, body.get("name"), body.get("phone_number"), body.get("relationship"))}, {}
+            return 201, {"guardian": self.backend.add_guardian(
+                user_id, body.get("name"), body.get("phone_number"), body.get("relationship"),
+                body.get("sms_enabled", True), body.get("voice_enabled", True),
+            )}, {}
+        if path == "/api/guardian/test" and method == "GET":
+            return 200, {"tests": self.backend.list_guardian_test_notifications(user_id, self._limit(query))}, {}
+        if path == "/api/guardian/test" and method == "POST":
+            return 202, {"test": self.backend.send_guardian_test(
+                user_id, body.get("guardian_id"), body.get("channel"), body.get("confirm"),
+            )}, {}
         guardian_id = self._id_after(path, "/api/guardian/")
         if guardian_id is not None and method == "PUT":
             return 200, {"guardian": self.backend.update_guardian(user_id, guardian_id, **body)}, {}

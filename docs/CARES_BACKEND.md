@@ -68,6 +68,7 @@ GET    /api/system/status       GET  /api/data/export
 GET    /api/monitoring/sessions DELETE /api/monitoring/sessions/{id}
 POST   /api/demo/start          POST /api/demo/stop
 GET    /api/demo/status         (demo routes disabled by production server by default)
+GET/POST /api/guardian/test     (explicit, authenticated delivery test)
 ```
 
 There is deliberately no risk-calculation endpoint. A frontend reads the
@@ -86,15 +87,21 @@ persisted engine output. Action statuses are `GENERATED` when no live provider i
 Without a geocoding key, the backend stores exact hardware coordinates and
 uses a coordinate string as the address. It never fabricates a location.
 
-The default web application keeps demo controls hidden; the production server
-disables demo routes unless `CARES_ENABLE_DEMO=1`. The NORMAL scenario requires
-the official local file `data/wesad/S2/S2.pkl` and fails clearly if it is absent.
-ELEVATED, SUSTAINED_HIGH, and RECOVERY are explicitly labeled synthetic
-controlled input. No WESAD data is committed to Git.
+The web application exposes Live Hardware Mode and Presentation Demo Mode when
+the demo routes are enabled. The production server disables those routes unless
+`CARES_ENABLE_DEMO=1`. The NORMAL scenario uses the official local file
+`data/wesad/S2/S2.pkl` when present and otherwise uses the configured synthetic
+fallback; ELEVATED, SUSTAINED_HIGH, and RECOVERY are explicitly labeled
+synthetic controlled input. No WESAD data is committed to Git.
 
 The Settings view exposes an ownership-scoped JSON export and deletion of one
 stopped monitoring session after explicit confirmation. Deletion removes local
 CARES records for that session only; it cannot recall provider-side messages.
+
+Guardian contacts persist SMS and voice preferences. `/api/guardian/test`
+requires an authenticated user, an owned guardian, a selected channel, and
+`{"confirm":true}`; it never invokes the risk engine and records simulated or
+actual provider results separately from emergency actions.
 
 ## Responsive app
 

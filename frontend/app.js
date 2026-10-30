@@ -11,6 +11,7 @@
     adaptation: [],
     incidents: [],
     guardians: [],
+    guardianTests: [],
     location: null,
     actions: [],
     hardware: [],
@@ -21,6 +22,8 @@
     page: "dashboard",
     eventSource: null,
     pollTimer: null,
+    secondaryRefreshPromise: null,
+    secondaryRefreshQueued: false,
     loading: false,
     realtimeConnected: false,
   };
@@ -156,26 +159,34 @@
         request(`/api/baseline/adaptation?limit=100&source=${sourceQuery}`),
         request("/api/incidents?limit=100"),
         request("/api/guardian"),
+        request("/api/guardian/test?limit=20"),
         request("/api/location/latest"),
         request("/api/actions?limit=100"),
-        request("/api/demo/status").catch(() => ({ demo: { active: false, source: "REAL_HARDWARE_ONLY" } })),
+        request("/api/demo/status").catch((error) => ({ demo: {
+          active: false,
+          enabled: error.status !== 404,
+          disabled: error.status === 404,
+          source: "REAL_HARDWARE_ONLY",
+          error: error.message,
+        } })),
         request("/api/hardware/status"),
         request("/api/monitoring/sessions?limit=100"),
         request("/api/system/status"),
       ]);
       state.current = results[0];
-      state.demo = results[9].demo || results[0].demo || { active: false, session: null };
+      state.demo = results[10].demo || results[0].demo || { active: false, session: null };
       state.history = results[1].events || [];
       state.baseline = results[2].baseline || null;
       state.daily = results[3].records || [];
       state.adaptation = results[4].events || [];
       state.incidents = results[5].incidents || [];
       state.guardians = results[6].guardians || [];
-      state.location = results[7].location || null;
-      state.actions = results[8].actions || [];
-      state.hardware = results[10].devices || [];
-      state.sessions = results[11].sessions || [];
-      state.system = results[12].status || null;
+      state.guardianTests = results[7].tests || [];
+      state.location = results[8].location || null;
+      state.actions = results[9].actions || [];
+      state.hardware = results[11].devices || [];
+      state.sessions = results[12].sessions || [];
+      state.system = results[13].status || null;
       renderAll();
     } catch (error) {
       if (error.status === 401) {
@@ -191,6 +202,13 @@
   function selectedSource() {
     if (state.selectedMode === "LIVE") return "REAL_HARDWARE";
     return state.demo?.source?.startsWith("DEMO_") ? state.demo.source : "DEMO_SYNTHETIC";
+  }
+
+  function selectedLocation() {
+    if (state.selectedMode === "DEMO") return null;
+    return state.current && Object.prototype.hasOwnProperty.call(state.current, "location")
+      ? state.current.location
+      : state.location;
   }
 
   function connectRealtime() {
@@ -236,31 +254,45 @@
     renderTables();
   }
 
-  async function refreshSecondaryData() {
-    try {
-      const sourceQuery = encodeURIComponent(selectedSource());
-      const [current, incidents, actions, location, hardware, system] = await Promise.all([
-        request(`/api/dashboard/current?source=${sourceQuery}`), request("/api/incidents?limit=100"), request("/api/actions?limit=100"), request("/api/location/latest"),
-        request("/api/hardware/status"), request("/api/system/status"),
-      ]);
-      state.current = current;
-      state.demo = current.demo || state.demo;
-      state.incidents = incidents.incidents || [];
-      state.actions = actions.actions || [];
-      state.location = location.location || null;
-      state.hardware = hardware.devices || [];
-      state.system = system.status || null;
-      renderAll();
-    } catch (_) { /* The current event remains visible while the API recovers. */ }
+  function refreshSecondaryData() {
+    if (state.secondaryRefreshPromise) {
+      state.secondaryRefreshQueued = true;
+      return state.secondaryRefreshPromise;
+    }
+    state.secondaryRefreshPromise = (async () => {
+      try {
+        const sourceQuery = encodeURIComponent(selectedSource());
+        const [current, incidents, actions, location, hardware, system] = await Promise.all([
+          request(`/api/dashboard/current?source=${sourceQuery}`), request("/api/incidents?limit=100"), request("/api/actions?limit=100"), request("/api/location/latest"),
+          request("/api/hardware/status"), request("/api/system/status"),
+        ]);
+        state.current = current;
+        state.demo = current.demo || state.demo;
+        state.incidents = incidents.incidents || [];
+        state.actions = actions.actions || [];
+        state.location = location.location || null;
+        state.hardware = hardware.devices || [];
+        state.system = system.status || null;
+        renderAll();
+      } catch (_) { /* The current event remains visible while the API recovers. */ }
+      finally {
+        state.secondaryRefreshPromise = null;
+        if (state.secondaryRefreshQueued) {
+          state.secondaryRefreshQueued = false;
+          window.setTimeout(() => refreshSecondaryData(), 250);
+        }
+      }
+    })();
+    return state.secondaryRefreshPromise;
   }
 
   function updateConnection(connected) {
     const labels = $$("#connection-status, #stream-label, #settings-stream");
-    labels.forEach((element) => { element.textContent = connected ? "Live updates connected" : "Realtime unavailable"; });
+    labels.forEach((element) => { element.textContent = connected ? "Live updates connected" : "Realtime unavailable — retrying"; });
     $("#connection-status .status-dot")?.classList.toggle("status-dot-muted", !connected);
     $("#stream-dot")?.classList.toggle("status-dot-muted", !connected);
     $("#stream-dot")?.classList.toggle("status-dot-alert", !connected);
-    $("#monitoring-mode").textContent = connected ? "Live backend stream" : "Awaiting backend stream";
+    $("#monitoring-mode").textContent = connected ? "Live backend stream" : "Reconnecting to backend stream";
   }
 
   function navigate(page) {
@@ -282,6 +314,7 @@
     renderCharts();
     renderIncidents();
     renderGuardians();
+    renderGuardianTests();
     renderSettings();
     renderDemo();
     renderMode();
@@ -350,20 +383,33 @@
     const device = state.hardware?.[0];
     const reading = device?.latest_reading;
     const freshness = device?.reading_freshness || "UNAVAILABLE";
+    const measurementStatus = device?.measurement_status || reading?.measurement_status || "NO_READING";
+    const validMeasurement = device?.measurement_valid !== false
+      && reading?.measurement_valid !== false
+      && measurementStatus !== "POOR_SIGNAL"
+      && measurementStatus !== "MEASUREMENT_MARKED_INVALID"
+      && measurementStatus !== "INSUFFICIENT_DATA";
+    const displayReading = reading && freshness === "FRESH" && validMeasurement ? reading : null;
     const freshElement = $("#hardware-freshness");
     if (freshElement) {
       freshElement.textContent = freshness;
       freshElement.className = `status-chip ${freshness === "FRESH" ? "status-chip-good" : "status-chip-muted"}`;
     }
-    $("#hardware-heart-rate").textContent = reading ? `${number(reading.heart_rate_bpm, 1)}` : "—";
-    $("#hardware-spo2").textContent = reading?.spo2_percent == null ? "—" : number(reading.spo2_percent, 1);
-    const location = state.location;
+    $("#hardware-heart-rate").textContent = displayReading ? `${number(displayReading.heart_rate_bpm, 1)}` : "—";
+    $("#hardware-spo2").textContent = displayReading?.spo2_percent == null ? "—" : number(displayReading.spo2_percent, 1);
+    const location = selectedLocation();
     $("#hardware-location").textContent = location ? `${number(location.latitude, 6)}, ${number(location.longitude, 6)}` : "Unavailable";
     $("#hardware-location-time").textContent = location ? `GPS · ${timestamp(location.timestamp)}` : "No GPS reading";
     $("#hardware-reading-time").textContent = reading ? timestamp(reading.timestamp) : "—";
     const transport = device?.transport_status || "DISCONNECTED";
-    const connection = freshness === "STALE" ? "Hardware connected, latest reading is stale" : transport;
+    const connection = measurementStatus === "POOR_SIGNAL" ? "Poor signal — adjust sensor" : measurementStatus === "INSUFFICIENT_DATA" ? "Insufficient data for estimation" : freshness === "STALE" ? "Hardware connected, latest reading is stale" : transport;
     $("#hardware-connection").textContent = connection;
+    $("#hardware-signal-quality").textContent = device?.signal_quality == null ? "Unavailable" : `${percentage(device.signal_quality * 100, 0)}%`;
+    $("#hardware-measurement-validity").textContent = measurementStatus === "QUALITY_UNSPECIFIED" ? "Validity received; quality not supplied" : measurementStatus.replaceAll("_", " ");
+    const buffered = Number(device?.samples_buffered);
+    const required = Number(device?.samples_required);
+    $("#hardware-sampling-health").textContent = Number.isFinite(buffered) && Number.isFinite(required) ? `${buffered} / ${required}` : "Unavailable";
+    $("#hardware-sampling-status").textContent = device?.last_error || `${number(device?.sampling_rate_hz, 1)} Hz configured · ${measurementStatus.replaceAll("_", " ")}`;
     const event = currentEvent();
     $("#hardware-risk-status").textContent = event?.source === "REAL_HARDWARE"
       ? `${riskDescriptor(event.risk_level).label} · ${event.explanation || "No explanation returned"}`
@@ -381,24 +427,29 @@
     const start = $("#demo-start");
     const stop = $("#demo-stop");
     if (!start || !stop) return;
-    start.disabled = active;
+    const disabled = demo.disabled || demo.enabled === false;
+    start.disabled = active || disabled;
     stop.disabled = !active;
-    $("#demo-status").textContent = active ? `${demo.source || "DEMO"} · ${demo.scenario || "ACTIVE"} · ${demo.sample_count || 0} samples` : (demo.error ? `Error: ${demo.error}` : "Stopped");
+    $("#demo-status").textContent = disabled
+      ? "Unavailable: demo routes are disabled by server configuration."
+      : active
+        ? `${demo.source || "DEMO"} · ${demo.scenario || "ACTIVE"} · ${demo.sample_count || 0} samples`
+        : (demo.error ? `Error: ${demo.error}` : "Stopped");
     $("#demo-status").classList.toggle("is-active", active);
     $("#demo-status").classList.toggle("is-error", Boolean(demo.error));
     const sessionId = demo.session?.id || state.current?.session?.id || "—";
     $("#demo-source").textContent = `Data source: ${demo.source || "—"} · Monitoring status: ${active ? "ACTIVE" : "STOPPED"} · Session: ${sessionId}`;
-    const description = demo.input_description || "Choose a scenario. The demo produces physiological samples only; the existing CARES engine decides every output.";
+    const description = demo.input_description || "Choose a scenario. Simulated samples are processed by the existing CARES decision engine and never represent hardware readings.";
     $("#demo-description").textContent = description;
     const demoActions = (state.actions || []).filter((action) => String(action.source || "").startsWith("DEMO_"));
     const demoAlert = demoActions.find((action) => ["GUARDIAN_NOTIFICATION", "GUARDIAN_COMMUNICATION", "EMERGENCY_ALERT"].includes(action.action_type));
     if ($("#demo-guardian-status")) {
       if (!demoAlert) $("#demo-guardian-status").textContent = "Guardian alert status: no demo alert generated yet.";
+      else if (String(demoAlert.source || "").startsWith("DEMO_")) $("#demo-guardian-status").textContent = "Guardian alert status: SIMULATED GUARDIAN NOTIFICATION — demo actions never contact real providers.";
       else if (state.system?.live_actions_enabled) $("#demo-guardian-status").textContent = `Guardian alert status: ${demoAlert.status}. Provider delivery is only confirmed by DELIVERED.`;
       else $("#demo-guardian-status").textContent = "Guardian alert status: SIMULATED GUARDIAN NOTIFICATION — live delivery is disabled; no real message was sent.";
     }
     $("#monitoring-status-dot")?.classList.toggle("status-dot-muted", !active);
-    renderMode();
   }
 
   function actionAttemptSummary(action) {
@@ -419,7 +470,7 @@
   }
 
   function renderLocation() {
-    const location = state.selectedMode === "DEMO" ? null : state.location;
+    const location = selectedLocation();
     $("#settings-gps").textContent = location ? "Connected" : "Not connected";
     if (!location) {
       const unavailable = state.selectedMode === "DEMO" ? "Hardware location unavailable in demonstration mode." : "Hardware location unavailable.";
@@ -457,7 +508,7 @@
     const baselineStatus = backendStatus || (calibrating ? "CALIBRATING" : baseline ? "READY" : "NOT_READY");
     $("#baseline-status").textContent = baselineStatus;
     $("#baseline-status").className = `tag ${baselineStatus === "READY" ? "tag-low" : baselineStatus === "CALIBRATING" ? "tag-medium" : "tag-muted"}`;
-    $("#baseline-kicker").textContent = String(event?.source || "").startsWith("DEMO_") ? "DEMO BASELINE" : "PERSONAL BASELINE — REAL HARDWARE";
+    $("#baseline-kicker").textContent = String(event?.source || "").startsWith("DEMO_") ? "DEMO BASELINE · SIMULATED" : "PERSONAL BASELINE — REAL HARDWARE";
     $("#calibration-label").textContent = `${baselineStatus}${baseline?.calibration_progress == null ? "" : ` · ${number(baseline.calibration_progress, 0)}%`}`;
     $("#calibration-bar").style.width = baseline?.calibration_progress === null || baseline?.calibration_progress === undefined ? "0%" : `${Math.max(0, Math.min(100, Number(baseline.calibration_progress)))}%`;
     $("#trusted-samples").textContent = baseline?.trusted_samples ?? (state.daily[0]?.trusted_samples ?? "—");
@@ -530,7 +581,8 @@
   }
 
   function renderIncidents() {
-    const incidents = state.incidents || [];
+    const source = selectedSource();
+    const incidents = (state.incidents || []).filter((incident) => !incident.source || incident.source === source);
     if (!incidents.length) {
       $("#incidents-list").innerHTML = '<div class="empty-state"><div class="empty-icon">✓</div><h2>No incidents recorded</h2><p>When the backend records an actual high-risk engine event, its explanation and available location will appear here.</p></div>';
       return;
@@ -548,7 +600,26 @@
     const sms = state.system?.sms_provider === "configured" ? "SMS configured" : "SMS not configured";
     const voice = state.system?.voice_provider === "configured" ? "Voice configured" : "Voice not configured";
     const delivery = `${sms} · ${voice}`;
-    $("#guardians-list").innerHTML = guardians.length ? guardians.map((guardian) => `<div class="guardian-card"><span class="guardian-avatar">${escapeHTML(initials(guardian.name))}</span><div class="guardian-card-main"><strong>${escapeHTML(guardian.name)}</strong><span>${escapeHTML(guardian.relationship)} · ${escapeHTML(guardian.phone_number)}</span><span class="tag tag-low">Guardian contact saved</span><span class="tag tag-muted">${escapeHTML(delivery)}</span></div><div class="guardian-actions"><button class="mini-button" data-edit-guardian="${guardian.id}" type="button">Edit</button><button class="mini-button danger" data-delete-guardian="${guardian.id}" type="button">Remove</button></div></div>`).join("") : '<div class="empty-inline">No guardian contacts saved yet.</div>';
+    $("#guardians-list").innerHTML = guardians.length ? guardians.map((guardian) => {
+      const channels = [guardian.sms_enabled ? "SMS enabled" : "SMS disabled", guardian.voice_enabled ? "Voice enabled" : "Voice disabled"].join(" · ");
+      return `<div class="guardian-card"><span class="guardian-avatar">${escapeHTML(initials(guardian.name))}</span><div class="guardian-card-main"><strong>${escapeHTML(guardian.name)}</strong><span>${escapeHTML(guardian.relationship)} · ${escapeHTML(guardian.phone_number)}</span><span class="tag tag-low">Guardian contact saved</span><span class="tag tag-muted">${escapeHTML(channels)} · ${escapeHTML(delivery)}</span></div><div class="guardian-actions"><button class="mini-button" data-edit-guardian="${guardian.id}" type="button">Edit</button><button class="mini-button danger" data-delete-guardian="${guardian.id}" type="button">Remove</button></div></div>`;
+    }).join("") : '<div class="empty-inline">No guardian contacts saved yet.</div>';
+  }
+
+  function renderGuardianTests() {
+    const select = $("#guardian-test-recipient");
+    const button = $("#guardian-test-button");
+    if (!select || !button) return;
+    const selected = select.value;
+    select.innerHTML = state.guardians.length
+      ? state.guardians.map((guardian) => `<option value="${escapeHTML(guardian.id)}">${escapeHTML(guardian.name)} · ${escapeHTML(guardian.phone_number)}</option>`).join("")
+      : '<option value="">No guardian contacts</option>';
+    if (selected && state.guardians.some((guardian) => String(guardian.id) === selected)) select.value = selected;
+    button.disabled = !state.guardians.length;
+    const tests = state.guardianTests || [];
+    $("#guardian-test-history").innerHTML = tests.length
+      ? tests.slice(0, 8).map((item) => `<div class="test-notification-row"><span>${escapeHTML(String(item.channel).toUpperCase())} · ${escapeHTML(item.status)}</span><small>${escapeHTML(timestamp(item.created_at))}</small></div>`).join("")
+      : '<div class="empty-inline">No guardian delivery tests recorded.</div>';
   }
 
   function renderSettings() {
@@ -578,6 +649,8 @@
   function resetGuardianForm() {
     $("#guardian-id").value = "";
     $("#guardian-form").reset();
+    $("#guardian-sms-enabled").checked = true;
+    $("#guardian-voice-enabled").checked = true;
     $("#guardian-form-heading").textContent = "Add a guardian";
     $("#guardian-cancel").classList.add("is-hidden");
     setMessage("#guardian-form-message");
@@ -590,6 +663,8 @@
     $("#guardian-name").value = guardian.name;
     $("#guardian-relationship").value = guardian.relationship;
     $("#guardian-phone").value = guardian.phone_number;
+    $("#guardian-sms-enabled").checked = Boolean(guardian.sms_enabled);
+    $("#guardian-voice-enabled").checked = Boolean(guardian.voice_enabled);
     $("#guardian-form-heading").textContent = "Edit guardian";
     $("#guardian-cancel").classList.remove("is-hidden");
     navigate("guardian");
@@ -601,13 +676,20 @@
     if (!form.reportValidity()) return;
     const id = $("#guardian-id").value;
     try {
-      const payload = { name: $("#guardian-name").value.trim(), relationship: $("#guardian-relationship").value.trim(), phone_number: $("#guardian-phone").value.trim() };
+      const payload = {
+        name: $("#guardian-name").value.trim(),
+        relationship: $("#guardian-relationship").value.trim(),
+        phone_number: $("#guardian-phone").value.trim(),
+        sms_enabled: $("#guardian-sms-enabled").checked,
+        voice_enabled: $("#guardian-voice-enabled").checked,
+      };
       if (id) await request(`/api/guardian/${encodeURIComponent(id)}`, { method: "PUT", body: payload });
       else await request("/api/guardian", { method: "POST", body: payload });
       resetGuardianForm();
       await refreshSecondaryData();
       state.guardians = (await request("/api/guardian")).guardians || [];
       renderGuardians();
+      renderGuardianTests();
       notify("Guardian contact saved. No notification was sent.");
     } catch (error) { setMessage("#guardian-form-message", error.message); }
   }
@@ -618,7 +700,31 @@
       await request(`/api/guardian/${encodeURIComponent(id)}`, { method: "DELETE" });
       state.guardians = (await request("/api/guardian")).guardians || [];
       renderGuardians();
+      renderGuardianTests();
     } catch (error) { notify(error.message); }
+  }
+
+  async function sendGuardianTest() {
+    const button = $("#guardian-test-button");
+    const guardianId = $("#guardian-test-recipient")?.value;
+    const channel = $("#guardian-test-channel")?.value;
+    if (!guardianId) return;
+    if (!window.confirm(`Send one explicit CARES ${channel.toUpperCase()} test to this guardian? This is not an emergency alert.`)) return;
+    button.disabled = true;
+    setMessage("#guardian-test-message", "Submitting test request…");
+    try {
+      const payload = await request("/api/guardian/test", {
+        method: "POST",
+        body: { guardian_id: Number(guardianId), channel, confirm: true },
+      });
+      state.guardianTests = [payload.test, ...(state.guardianTests || [])].slice(0, 20);
+      renderGuardianTests();
+      setMessage("#guardian-test-message", `Test status: ${payload.test.status}. No emergency workflow was triggered.`);
+    } catch (error) {
+      setMessage("#guardian-test-message", error.message);
+    } finally {
+      button.disabled = !state.guardians.length;
+    }
   }
 
   async function exportData() {
@@ -694,6 +800,17 @@
     showAuth("login");
   }
 
+  function clearSelectedSourceView() {
+    state.current = null;
+    state.history = [];
+    state.baseline = null;
+    state.daily = [];
+    state.adaptation = [];
+    state.incidents = [];
+    state.actions = [];
+    renderAll();
+  }
+
   async function startDemo() {
     const button = $("#demo-start");
     button.disabled = true;
@@ -701,28 +818,46 @@
     try {
       const payload = await request("/api/demo/start", { method: "POST", body: { scenario: $("#demo-scenario").value } });
       state.demo = payload.demo;
-      renderDemo();
+      state.selectedMode = "DEMO";
+      clearSelectedSourceView();
       await loadData();
       notify(`Demo started: ${payload.demo.source}. Every decision is produced by CARES.`);
     } catch (error) {
-      state.demo = { active: false, error: error.message };
+      state.demo = { active: false, enabled: error.status !== 404, disabled: error.status === 404, error: error.message };
       renderDemo();
       notify(error.message);
     }
   }
 
-  async function stopDemo() {
+  async function stopDemo(notifyOnSuccess = true) {
+    if (!state.demo?.active) return state.demo;
     $("#demo-stop").disabled = true;
     try {
       const payload = await request("/api/demo/stop", { method: "POST" });
       state.demo = payload.demo;
       renderDemo();
-      await loadData();
-      notify("Demo stopped. Its runtime engine state was discarded.");
+      if (notifyOnSuccess) notify("Demo stopped. Its runtime engine state was discarded.");
+      return state.demo;
     } catch (error) {
       renderDemo();
       notify(error.message);
+      throw error;
     }
+  }
+
+  async function changeMode(event) {
+    const nextMode = event.target.value === "DEMO" ? "DEMO" : "LIVE";
+    if (nextMode === state.selectedMode) return;
+    if (nextMode === "LIVE" && state.selectedMode === "DEMO" && state.demo?.active) {
+      try {
+        await stopDemo(false);
+      } catch (_) {
+        notify("Demo could not be stopped cleanly; its DEMO data remains isolated from Live Hardware Mode.");
+      }
+    }
+    state.selectedMode = nextMode;
+    clearSelectedSourceView();
+    await loadData();
   }
 
   function bindEvents() {
@@ -731,16 +866,13 @@
     $("#register-form").addEventListener("submit", register);
     $("#guardian-form").addEventListener("submit", submitGuardian);
     $("#guardian-cancel").addEventListener("click", resetGuardianForm);
+    $("#guardian-test-button").addEventListener("click", sendGuardianTest);
     $("#logout-button").addEventListener("click", logout);
     $("#demo-start").addEventListener("click", startDemo);
-    $("#demo-stop").addEventListener("click", stopDemo);
+    $("#demo-stop").addEventListener("click", () => stopDemo());
     $("#export-data-button").addEventListener("click", exportData);
     $("#delete-session-button").addEventListener("click", deleteSelectedSession);
-    $("#mode-selector").addEventListener("change", async (event) => {
-      state.selectedMode = event.target.value === "DEMO" ? "DEMO" : "LIVE";
-      renderMode();
-      await loadData();
-    });
+    $("#mode-selector").addEventListener("change", changeMode);
     $("#data-session-select").addEventListener("change", renderSettings);
     document.addEventListener("click", (event) => {
       const pageButton = event.target.closest("[data-page]");

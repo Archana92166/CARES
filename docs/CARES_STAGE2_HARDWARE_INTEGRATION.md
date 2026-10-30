@@ -4,7 +4,7 @@
 
 CARES now accepts raw MAX30102/ESP32 BVP packets over HTTP and feeds completed windows through the existing `WristBVPHREstimator` and `CARESDecisionEngine`. No physical device was connected during implementation; automated inputs are synthetic fixtures only.
 
-Production runtime uses `REAL_HARDWARE` sessions. The actual HTTP server disables `/api/demo/*` by default; set `CARES_ENABLE_DEMO=1` only for an explicitly non-production environment. WESAD and synthetic demo adapters remain available only for offline evaluation and regression fixtures and are not part of the documented hardware data path.
+Production runtime uses `REAL_HARDWARE` sessions. The actual HTTP server disables `/api/demo/*` by default; set `CARES_ENABLE_DEMO=1` only for an explicitly non-production presentation or test environment. WESAD and synthetic demo adapters remain source-separated and are never part of the documented hardware data path.
 
 ## Transport
 
@@ -34,7 +34,7 @@ For tests or controlled setup, `CARESBackend.register_hardware_device(user_id, d
 
 ## Version 1 packet contract
 
-The implementation deliberately supports one format: raw BVP samples, not already-computed HR packets. An optional `location` object may be supplied by an authorized GPS/location source attached to the ESP32 installation; the MAX30102 itself has no GPS. The current estimator defaults are 64 Hz, a 10-second/640-sample window, and a 1-second step. The backend setting `hardware_sampling_rate_hz` is configurable and defaults to 64 Hz; packets must match it.
+The implementation supports raw BVP samples and validated precomputed heart-rate/SpO₂ packets. An optional `location` object may be supplied by an authorized GPS/location source attached to the ESP32 installation; the MAX30102 itself has no GPS. Precomputed packets may include `signal_quality` in the range 0–1 and boolean `measurement_valid`; poor or invalid measurements are reported as unavailable and do not enter the decision engine. The current raw-BVP estimator defaults are 64 Hz, a 10-second/640-sample window, and a 1-second step. The backend setting `hardware_sampling_rate_hz` is configurable and defaults to 64 Hz; packets must match it. This is the configured protocol rate, not a measured physical-device rate.
 
 ```json
 {
@@ -55,7 +55,7 @@ The implementation deliberately supports one format: raw BVP samples, not alread
 }
 ```
 
-Required fields are `protocol_version`, `device_id`, `connection_id`, `sequence`, `device_timestamp_start`, `sampling_rate_hz`, and a non-empty `bvp_samples` array. Device timestamps are finite seconds in the device clock; backend receipt time is tracked separately and is never substituted for device time in physiological features. BVP values must be finite numbers. Packet arrays are limited to 4,096 values and HTTP bodies remain subject to the server’s existing 1 MB limit. `user_id` is not accepted.
+Required fields are `protocol_version`, `device_id`, `connection_id`, `sequence`, `device_timestamp_start`, `sampling_rate_hz`, and either a non-empty `bvp_samples` array or validated `heart_rate_bpm`. Optional `spo2_percent`, `signal_quality`, and `measurement_valid` fields are range/type checked. Device timestamps are finite seconds in the device clock; backend receipt time is tracked separately and is never substituted for device time in physiological features. BVP values must be finite numbers. Packet arrays are limited to 4,096 values and HTTP bodies remain subject to the server’s existing 1 MB limit. `user_id` is not accepted.
 
 `connection_id` must change when the firmware starts a new Wi-Fi connection/boot epoch. Sequence numbers must increase within a connection. Duplicate, stale, or out-of-order sequence/timestamp packets return HTTP `409`; packets from retired connection IDs also return `409`. Unsupported versions, malformed fields, non-finite values, wrong sampling rate, or oversized arrays return `422`. Missing/invalid credentials return `401`; unauthorized session ownership is not accepted.
 
@@ -71,6 +71,11 @@ HREstimate.heart_rate_bpm -> PhysiologicalSample.heart_rate_bpm
 ```
 
 Rejected/held estimates are reported in the ingest response but are not converted into a decision-engine sample and cannot change baseline, temporal features, escalation, persistence, or guardian actions. Accepted estimates use `CARESBackend.process_sample`, then the existing SQLite, guardian-action, incident, and SSE pathways. No GPS or external notification side effect is added.
+
+The live dashboard exposes transport status separately from measurement status:
+`INSUFFICIENT_DATA`, `POOR_SIGNAL`, `QUALITY_UNSPECIFIED`, `VALID`, `STALE`, and
+`UNAVAILABLE` are not risk classifications. A stale or poor-quality reading is
+never substituted into the current live display as a fresh value.
 
 ## Connection lifecycle
 
@@ -99,7 +104,7 @@ The firmware teammate must provide:
 - the device token through a deployment secret channel; and
 - the backend URL, network route, and active CARES session policy.
 
-TLS, network isolation, secret rotation, physical sensor placement, MAX30102 electrical validation, and physical-device acceptance testing remain deployment responsibilities. The current HTTP token boundary is access control, not a claim of end-to-end transport security if deployed without TLS or network protection. Production demo UI is hidden and server routes are disabled by default; direct demo fixtures remain for regression/offline evaluation.
+TLS, network isolation, secret rotation, physical sensor placement, MAX30102 electrical validation, and physical-device acceptance testing remain deployment responsibilities. The current HTTP token boundary is access control, not a claim of end-to-end transport security if deployed without TLS or network protection. The dashboard exposes Presentation Demo Mode when `CARES_ENABLE_DEMO=1`; demo routes remain disabled by default for production operation, and all demo fixtures remain source-separated from hardware data.
 
 ## Stage 3 action execution
 

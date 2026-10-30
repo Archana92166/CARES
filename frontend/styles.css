@@ -294,6 +294,17 @@ tbody tr:hover { background: #fbfdfc; }
 .guardian-actions { display: flex; gap: 5px; }
 .mini-button { background: transparent; border: 0; color: var(--teal); font-size: .7rem; font-weight: 800; padding: 5px; }
 .mini-button.danger { color: var(--high); }
+.guardian-preferences { border: 1px solid var(--line); border-radius: 9px; display: grid; gap: 8px; margin: 3px 0 0; padding: 12px; }
+.guardian-preferences legend { color: var(--muted); font-size: .68rem; font-weight: 800; padding: 0 5px; text-transform: uppercase; }
+.checkbox-row { align-items: center; color: var(--ink-soft); display: flex; font-size: .75rem; gap: 8px; }
+.checkbox-row input { accent-color: var(--teal); width: auto; }
+.guardian-test-panel { margin-top: 17px; }
+.guardian-test-controls { align-items: end; display: grid; gap: 8px; grid-template-columns: .9fr 1.5fr .7fr 1fr auto; }
+.guardian-test-controls label { color: var(--muted); font-size: .68rem; font-weight: 800; text-transform: uppercase; }
+.guardian-test-controls select { background: var(--paper); border: 1px solid var(--line); border-radius: 9px; color: var(--ink); min-height: 42px; padding: 8px 10px; }
+.test-notification-history { border-top: 1px solid var(--line); display: grid; gap: 7px; margin-top: 16px; padding-top: 12px; }
+.test-notification-row { align-items: center; display: flex; font-size: .72rem; justify-content: space-between; }
+.test-notification-row small { color: var(--muted); }
 .location-details { display: grid; gap: 18px; }
 .location-detail-value { border-bottom: 1px solid var(--line); padding-bottom: 14px; }
 .location-detail-value:last-child { border-bottom: 0; padding-bottom: 0; }
@@ -363,6 +374,8 @@ tbody tr:hover { background: #fbfdfc; }
   .charts-grid { grid-template-columns: 1fr; }
   .chart-wide { grid-column: auto; }
   .guardian-layout, .location-page-grid, .settings-grid { grid-template-columns: 1fr; }
+  .guardian-test-controls { align-items: stretch; grid-template-columns: 1fr 1fr; }
+  .guardian-test-controls .button { grid-column: 1 / -1; }
   .app-footer { flex-direction: column; gap: 3px; padding: 0 17px 17px; }
 }
 
@@ -382,6 +395,8 @@ tbody tr:hover { background: #fbfdfc; }
   .baseline-side-fact { display: grid; grid-template-columns: 1fr 1fr; }
   .baseline-side-fact span { margin: 0; }
   .baseline-side-fact strong + span { margin-left: 0; }
+  .guardian-test-controls { grid-template-columns: 1fr; }
+  .guardian-test-controls .button { grid-column: auto; }
   .incident-card-head { flex-direction: column; gap: 8px; }
   .chart-legend { gap: 6px; }
   .chart-legend span { font-size: .6rem; }

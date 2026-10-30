@@ -11,7 +11,7 @@ import os
 import random
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from pathlib import Path
 from typing import Iterator, Optional
@@ -230,7 +230,7 @@ class DemoController:
             raise NotFoundError("No active demo monitoring session.")
         run.stop_event.set()
         if run.thread is not threading.current_thread():
-            run.thread.join(timeout=max(2.0, self.interval_seconds * 20))
+            run.thread.join(timeout=max(5.0, self.interval_seconds * 100))
         if run.thread.is_alive():
             raise ConflictError("Demo stream did not stop cleanly; try again shortly.")
         session = self.backend.get_monitoring_session(user_id, run.session_id)
@@ -244,20 +244,35 @@ class DemoController:
             run = self._runs.get(user_id)
         if run is None:
             return
+        cycle_offset = 0.0
+        cycle_duration = max(
+            (float(sample.timestamp) for sample in run.stream.samples),
+            default=0.0,
+        ) + 1.0
         try:
             while not run.stop_event.is_set():
                 for sample in run.stream:
                     if run.stop_event.wait(self.interval_seconds):
                         break
+                    # Continuous presentation streams reuse the finite fixture,
+                    # but every cycle must remain strictly later than the
+                    # previous one so the engine's temporal ordering contract
+                    # is not violated.
+                    current_sample = (
+                        sample
+                        if cycle_offset == 0.0
+                        else replace(sample, timestamp=float(sample.timestamp) + cycle_offset)
+                    )
                     self.backend.process_sample(
                         user_id,
-                        sample,
+                        current_sample,
                         session_id=session_id,
                         source=run.stream.source,
                     )
                     run.sample_count += 1
                 if not self.continuous:
                     break
+                cycle_offset += cycle_duration
         except Exception as exc:  # surfaced through status, never silently swallowed
             run.last_error = str(exc)
         finally:

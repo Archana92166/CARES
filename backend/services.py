@@ -88,6 +88,16 @@ def _decode_json(value: str) -> Any:
         return []
 
 
+def _as_bool(value: Any, default: bool = True) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _validate_user_id(database: Database, user_id: int) -> None:
     if database.fetch_one("SELECT id FROM users WHERE id = ?", (user_id,)) is None:
         raise NotFoundError("User not found.")
@@ -224,7 +234,9 @@ class CARESBackend:
                     (int(row["id"]),),
                 )
 
-    def _action_is_externally_queueable(self, action_type: str) -> bool:
+    def _action_is_externally_queueable(self, action_type: str, source: str = "REAL_HARDWARE") -> bool:
+        if str(source).upper().startswith("DEMO_"):
+            return False
         return self.external_actions_enabled and action_type in {
             "GUARDIAN_NOTIFICATION", "GUARDIAN_COMMUNICATION", "EMERGENCY_ALERT",
         }
@@ -277,6 +289,12 @@ class CARESBackend:
             )
             count = 0
             for row in rows:
+                if str(row["source"]).upper().startswith("DEMO_"):
+                    self._set_action_status(
+                        int(row["id"]), int(row["user_id"]), "GENERATED",
+                        {"execution_status": "SIMULATED", "source_isolation": "DEMO_NEVER_DISPATCHES"},
+                    )
+                    continue
                 # Claim in SQLite so two local workers cannot submit the same
                 # action concurrently. A claimed row is recoverable on restart.
                 claim_metadata = _decode_json(row["metadata"])
@@ -413,22 +431,58 @@ class CARESBackend:
             return None
         return location
 
-    def _alert_message(self, action: dict[str, Any]) -> str:
+    def _location_context_for_alert(
+        self, user_id: int, session_id: str, maximum_timestamp: Optional[float] = None
+    ) -> tuple[Optional[dict[str, Any]], Optional[dict[str, Any]]]:
+        latest = self._location_before(user_id, session_id, maximum_timestamp) if maximum_timestamp is not None else self.latest_location(user_id, session_id=session_id)
+        fresh = self._fresh_location_for_alert(user_id, session_id, maximum_timestamp)
+        return fresh, latest
+
+    @staticmethod
+    def _location_link(location: Mapping[str, Any]) -> str:
+        latitude = float(location["latitude"])
+        longitude = float(location["longitude"])
+        return f"https://www.google.com/maps/search/?api=1&query={latitude:.6f},{longitude:.6f}"
+
+    @staticmethod
+    def _event_time_text(value: Any) -> str:
+        timestamp = float(value)
+        if timestamp >= 1_000_000_000:
+            return datetime.fromtimestamp(timestamp, timezone.utc).isoformat(timespec="seconds")
+        return f"T+{timestamp:.1f}s"
+
+    def _alert_message(self, action: dict[str, Any], channel: str = "sms") -> str:
         event = self._engine_event(int(action["engine_event_id"]), int(action["user_id"]))
-        message = (
-            "CARES HIGH-RISK ALERT: monitoring requires immediate attention. "
-            f"Event time {float(event['timestamp']):.0f}."
-        )
-        location = self._fresh_location_for_alert(
+        user = self.user(int(action["user_id"]))
+        risk = str(event.get("risk_level") or "UNKNOWN")
+        explanation = " ".join(str(event.get("explanation") or "No engine explanation available.").split())
+        explanation = explanation[:100]
+        display_name = str(user["name"])[:60]
+        fresh, latest = self._location_context_for_alert(
             int(action["user_id"]), str(action["session_id"]), float(event["timestamp"])
         )
-        if location is not None:
+        message = (
+            f"CARES ALERT: {display_name} has triggered a {risk} alert. "
+            f"Reason: {explanation}. Time: {self._event_time_text(event['timestamp'])}."
+        )
+        if fresh is not None:
             message += (
-                f" Current authorized location: {float(location['latitude']):.6f},"
-                f" {float(location['longitude']):.6f}."
+                f" Current location: {float(fresh['latitude']):.6f}, {float(fresh['longitude']):.6f}."
+                f" Map: {self._location_link(fresh)}"
             )
+        elif latest is not None:
+            message += (
+                f" Current location is unavailable or stale. Last-known location: "
+                f"{float(latest['latitude']):.6f}, {float(latest['longitude']):.6f} "
+                f"at {self._event_time_text(latest['timestamp'])}."
+            )
+            if channel == "sms":
+                message += f" Map: {self._location_link(latest)}"
         else:
-            message += " Current authorized location is unavailable."
+            message += " Current location is unavailable."
+        if channel == "voice":
+            message += " A map link is available in the CARES dashboard."
+        message += " Please contact the person and verify their condition. CARES is an assistive system, not a diagnosis."
         return message[:480]
 
     def _recipients_for_action(self, action: dict[str, Any], channel: str) -> list[tuple[Optional[int], str]]:
@@ -437,8 +491,9 @@ class CARESBackend:
             if not self.emergency_action_enabled or not self.emergency_recipient:
                 return []
             return [(None, self.emergency_recipient)]
+        preference_column = "sms_enabled" if channel == "sms" else "voice_enabled"
         guardians = self.database.fetch_all(
-            "SELECT id, phone_number FROM guardian_contacts WHERE user_id = ? ORDER BY id",
+            f"SELECT id, phone_number FROM guardian_contacts WHERE user_id = ? AND {preference_column} = 1 ORDER BY id",
             (action["user_id"],),
         )
         return [(int(row["id"]), str(row["phone_number"])) for row in guardians]
@@ -469,6 +524,12 @@ class CARESBackend:
         action_type = str(action["action_type"])
         if action_type not in {"GUARDIAN_NOTIFICATION", "GUARDIAN_COMMUNICATION", "EMERGENCY_ALERT"}:
             return
+        if str(action.get("source", "")).upper().startswith("DEMO_"):
+            self._set_action_status(
+                int(action["id"]), int(action["user_id"]), "GENERATED",
+                {"execution_status": "SIMULATED", "source_isolation": "DEMO_NEVER_DISPATCHES"},
+            )
+            return
         if action_type == "GUARDIAN_NOTIFICATION":
             provider = self.sms_provider
             channel = "sms"
@@ -491,7 +552,6 @@ class CARESBackend:
             )
             return
 
-        message = self._alert_message(action)
         action_id = int(action["id"])
         user_id = int(action["user_id"])
         self._set_action_status(action_id, user_id, "PROCESSING")
@@ -514,7 +574,7 @@ class CARESBackend:
             )
             idempotency_key = f"cares-action-{action_id}-{channel}-{recipient_id or 'emergency'}"
             try:
-                result = provider.submit(recipient, message, idempotency_key)
+                result = provider.submit(recipient, self._alert_message(action, channel), idempotency_key)
             except ProviderError as exc:
                 if exc.ambiguous:
                     attempt_status = "UNKNOWN"
@@ -718,6 +778,14 @@ class CARESBackend:
                 "SELECT * FROM location_events WHERE user_id = ? ORDER BY id", (user_id,)
             )
         ]
+        guardian_tests = [
+            dict(row)
+            for row in self.database.fetch_all(
+                "SELECT id, guardian_id, channel, status, created_at, updated_at, provider_reference, failure_reason, metadata "
+                "FROM guardian_test_notifications WHERE user_id = ? ORDER BY created_at",
+                (user_id,),
+            )
+        ]
         incidents = []
         for row in self.database.fetch_all(
             "SELECT * FROM incidents WHERE user_id = ? ORDER BY id", (user_id,)
@@ -754,6 +822,7 @@ class CARESBackend:
             "exported_at": utc_now(),
             "user": user,
             "guardians": self.list_guardians(user_id),
+            "guardian_test_notifications": guardian_tests,
             "monitoring_sessions": sessions,
             "engine_events": events,
             "incidents": incidents,
@@ -1002,6 +1071,30 @@ class CARESBackend:
             stream.last_error = None
             estimate = None
             if packet.heart_rate_bpm is not None:
+                signal_quality = packet.signal_quality
+                invalid_reason = None
+                if packet.measurement_valid is False:
+                    invalid_reason = "MEASUREMENT_MARKED_INVALID"
+                elif signal_quality is not None and signal_quality < 0.10:
+                    invalid_reason = "POOR_SIGNAL"
+                if invalid_reason is not None:
+                    stream.latest_signal_quality = signal_quality
+                    stream.latest_measurement_valid = False
+                    stream.latest_measurement_status = invalid_reason
+                    stream.status = "RECEIVING_DATA"
+                    stream.last_error = invalid_reason
+                    return self._hardware_response(
+                        stream, packet, reconnected=reconnected,
+                        estimate={
+                            "timestamp": packet.device_timestamp_start,
+                            "heart_rate_bpm": packet.heart_rate_bpm,
+                            "quality": signal_quality,
+                            "accepted": False,
+                            "method": "PRECOMPUTED_SENSOR_READING",
+                            "reason": invalid_reason,
+                        },
+                        engine_output=None,
+                    )
                 # MAX30100/NEO-6M installations may send trusted, precomputed
                 # readings. The backend still validates bounds and routes HR
                 # through the existing engine; it never assigns risk here.
@@ -1011,12 +1104,16 @@ class CARESBackend:
                 stream.latest_reading_at = estimate_timestamp
                 stream.latest_reading_received_at = now
                 stream.latest_reading_source = "PRECOMPUTED_SENSOR_READING"
+                stream.latest_signal_quality = signal_quality
+                stream.latest_measurement_valid = True
+                stream.latest_measurement_status = "VALID" if signal_quality is not None else "QUALITY_UNSPECIFIED"
                 sample = PhysiologicalSample(
                     timestamp=estimate_timestamp,
                     heart_rate_bpm=packet.heart_rate_bpm,
                     additional_metrics={
                         "hr_valid": 1.0,
                         "bvp_quality": 1.0,
+                        **({"signal_quality": signal_quality} if signal_quality is not None else {}),
                         **({"spo2_percent": packet.spo2_percent} if packet.spo2_percent is not None else {}),
                     },
                 )
@@ -1024,6 +1121,8 @@ class CARESBackend:
                 stream.append(packet.bvp_samples)
                 window = stream.window()
                 if window is None:
+                    stream.latest_measurement_valid = False
+                    stream.latest_measurement_status = "INSUFFICIENT_DATA"
                     return self._hardware_response(
                         stream, packet, reconnected=reconnected, estimate=None, engine_output=None
                     )
@@ -1033,6 +1132,10 @@ class CARESBackend:
                 stream.advance_window()
                 if not estimate.accepted:
                     stream.status = "RECEIVING_DATA"
+                    stream.latest_signal_quality = estimate.quality
+                    stream.latest_measurement_valid = False
+                    stream.latest_measurement_status = "POOR_SIGNAL"
+                    stream.last_error = estimate.reason
                     return self._hardware_response(
                         stream, packet, reconnected=reconnected, estimate=estimate.to_dict(), engine_output=None
                     )
@@ -1041,6 +1144,10 @@ class CARESBackend:
                 stream.latest_reading_at = estimate.timestamp
                 stream.latest_reading_received_at = now
                 stream.latest_reading_source = "RAW_BVP_ESTIMATE"
+                stream.latest_signal_quality = estimate.quality
+                stream.latest_measurement_valid = True
+                stream.latest_measurement_status = "VALID"
+                stream.last_error = None
                 sample = PhysiologicalSample(
                     timestamp=estimate.timestamp,
                     heart_rate_bpm=estimate.heart_rate_bpm,
@@ -1055,6 +1162,8 @@ class CARESBackend:
             self._persist_hardware_reading(
                 device.user_id, session["id"], packet.device_id,
                 sample.timestamp, now, sample.heart_rate_bpm, packet.spo2_percent,
+                stream.latest_signal_quality, True, stream.latest_measurement_status,
+                len(packet.bvp_samples), packet.sampling_rate_hz,
             )
             stream.status = "RECEIVING_DATA"
             return self._hardware_response(
@@ -1127,17 +1236,27 @@ class CARESBackend:
                 "spo2_percent": stream.latest_spo2_percent,
                 "timestamp": stream.latest_reading_at,
                 "source": stream.latest_reading_source,
+                "signal_quality": stream.latest_signal_quality,
+                "measurement_valid": stream.latest_measurement_valid,
+                "measurement_status": stream.latest_measurement_status,
             } if stream.latest_reading_at is not None else None,
+            "signal_quality": stream.latest_signal_quality,
+            "measurement_valid": stream.latest_measurement_valid,
+            "measurement_status": stream.latest_measurement_status,
+            "samples_required": stream.estimator.window_samples,
         }
 
     def _persist_hardware_reading(
         self, user_id: int, session_id: str, device_id: str, timestamp: float,
         received_at: float, heart_rate_bpm: float, spo2_percent: Optional[float],
+        signal_quality: Optional[float], measurement_valid: bool,
+        measurement_status: str, sample_count: int, sampling_rate_hz: float,
     ) -> dict[str, Any]:
         cursor = self.database.execute(
-            "INSERT INTO hardware_readings(user_id, session_id, device_id, timestamp, received_at, heart_rate_bpm, spo2_percent, source) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, 'REAL_HARDWARE')",
-            (user_id, session_id, device_id, timestamp, received_at, heart_rate_bpm, spo2_percent),
+            "INSERT INTO hardware_readings(user_id, session_id, device_id, timestamp, received_at, heart_rate_bpm, spo2_percent, signal_quality, measurement_valid, measurement_status, sample_count, sampling_rate_hz, source) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'REAL_HARDWARE')",
+            (user_id, session_id, device_id, timestamp, received_at, heart_rate_bpm, spo2_percent,
+             signal_quality, int(measurement_valid), measurement_status, sample_count, sampling_rate_hz),
         )
         row = self.database.fetch_one("SELECT * FROM hardware_readings WHERE id = ?", (cursor.lastrowid,))
         return dict(row) if row else {}
@@ -1165,6 +1284,8 @@ class CARESBackend:
                 if latest is not None:
                     reading_age = max(0.0, now - float(latest["received_at"]))
                     freshness = "FRESH" if reading_age <= self.hardware_stale_timeout_seconds else "STALE"
+                if stream is not None and stream.latest_measurement_valid is False:
+                    freshness = "UNAVAILABLE"
                 result.append({
                     "device_id": device.device_id,
                     "transport_status": stream.status if stream else "DISCONNECTED",
@@ -1180,12 +1301,29 @@ class CARESBackend:
                     "latest_reading": latest,
                     "reading_age_seconds": reading_age,
                     "reading_freshness": freshness,
+                    "measurement_status": (
+                        stream.latest_measurement_status if stream is not None
+                        else (latest.get("measurement_status") if latest else "NO_READING")
+                    ),
+                    "signal_quality": (
+                        stream.latest_signal_quality if stream is not None
+                        else (latest.get("signal_quality") if latest else None)
+                    ),
+                    "measurement_valid": (
+                        stream.latest_measurement_valid if stream is not None
+                        else (bool(latest.get("measurement_valid")) if latest else False)
+                    ),
+                    "samples_required": (
+                        stream.estimator.window_samples if stream is not None
+                        else int(round(self.hardware_sampling_rate_hz * 10.0))
+                    ),
+                    "sampling_rate_hz": self.hardware_sampling_rate_hz,
                 })
             return result
 
     def _latest_hardware_reading(self, user_id: int, device_id: str) -> Optional[dict[str, Any]]:
         row = self.database.fetch_one(
-            "SELECT id, session_id, device_id, timestamp, received_at, heart_rate_bpm, spo2_percent, source "
+            "SELECT id, session_id, device_id, timestamp, received_at, heart_rate_bpm, spo2_percent, signal_quality, measurement_valid, measurement_status, sample_count, sampling_rate_hz, source "
             "FROM hardware_readings WHERE user_id = ? AND device_id = ? ORDER BY id DESC LIMIT 1",
             (user_id, device_id),
         )
@@ -1195,7 +1333,7 @@ class CARESBackend:
         _validate_user_id(self.database, user_id)
         limit = max(1, min(int(limit), 500))
         return [dict(row) for row in self.database.fetch_all(
-            "SELECT id, session_id, device_id, timestamp, received_at, heart_rate_bpm, spo2_percent, source "
+            "SELECT id, session_id, device_id, timestamp, received_at, heart_rate_bpm, spo2_percent, signal_quality, measurement_valid, measurement_status, sample_count, sampling_rate_hz, source "
             "FROM hardware_readings WHERE user_id = ? ORDER BY id DESC LIMIT ?", (user_id, limit)
         )]
 
@@ -1253,11 +1391,14 @@ class CARESBackend:
     def list_guardians(self, user_id: int) -> list[dict[str, Any]]:
         _validate_user_id(self.database, user_id)
         return [dict(row) for row in self.database.fetch_all(
-            "SELECT id, name, phone_number, relationship, created_at, updated_at "
+            "SELECT id, name, phone_number, relationship, sms_enabled, voice_enabled, created_at, updated_at "
             "FROM guardian_contacts WHERE user_id = ? ORDER BY id", (user_id,)
         )]
 
-    def add_guardian(self, user_id: int, name: Any, phone: Any, relationship: Any) -> dict[str, Any]:
+    def add_guardian(
+        self, user_id: int, name: Any, phone: Any, relationship: Any,
+        sms_enabled: Any = True, voice_enabled: Any = True,
+    ) -> dict[str, Any]:
         _validate_user_id(self.database, user_id)
         name = str(name or "").strip()
         phone = str(phone or "").strip()
@@ -1266,10 +1407,16 @@ class CARESBackend:
             raise ValidationError("Guardian name and relationship are required.")
         if not PHONE.fullmatch(phone):
             raise ValidationError("Guardian phone number is invalid.")
+        if self.database.fetch_one(
+            "SELECT id FROM guardian_contacts WHERE user_id = ? AND phone_number = ?",
+            (user_id, phone),
+        ) is not None:
+            raise ConflictError("This guardian phone number is already configured for the account.")
         now = utc_now()
         cursor = self.database.execute(
-            "INSERT INTO guardian_contacts(user_id, name, phone_number, relationship, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?)", (user_id, name, phone, relationship, now, now)
+            "INSERT INTO guardian_contacts(user_id, name, phone_number, relationship, sms_enabled, voice_enabled, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (user_id, name, phone, relationship, int(_as_bool(sms_enabled)), int(_as_bool(voice_enabled)), now, now),
         )
         return self._guardian(user_id, cursor.lastrowid)
 
@@ -1278,12 +1425,14 @@ class CARESBackend:
         name = str(values.get("name", current["name"])).strip()
         phone = str(values.get("phone_number", current["phone_number"])).strip()
         relationship = str(values.get("relationship", current["relationship"])).strip()
+        sms_enabled = _as_bool(values.get("sms_enabled"), bool(current.get("sms_enabled", 1)))
+        voice_enabled = _as_bool(values.get("voice_enabled"), bool(current.get("voice_enabled", 1)))
         if not 1 <= len(name) <= 120 or not 1 <= len(relationship) <= 80 or not PHONE.fullmatch(phone):
             raise ValidationError("Guardian contact fields are invalid.")
         self.database.execute(
-            "UPDATE guardian_contacts SET name = ?, phone_number = ?, relationship = ?, updated_at = ? "
+            "UPDATE guardian_contacts SET name = ?, phone_number = ?, relationship = ?, sms_enabled = ?, voice_enabled = ?, updated_at = ? "
             "WHERE id = ? AND user_id = ?",
-            (name, phone, relationship, utc_now(), guardian_id, user_id),
+            (name, phone, relationship, int(sms_enabled), int(voice_enabled), utc_now(), guardian_id, user_id),
         )
         return self._guardian(user_id, guardian_id)
 
@@ -1293,12 +1442,88 @@ class CARESBackend:
 
     def _guardian(self, user_id: int, guardian_id: int) -> dict[str, Any]:
         row = self.database.fetch_one(
-            "SELECT id, name, phone_number, relationship, created_at, updated_at "
+            "SELECT id, name, phone_number, relationship, sms_enabled, voice_enabled, created_at, updated_at "
             "FROM guardian_contacts WHERE id = ? AND user_id = ?", (guardian_id, user_id)
         )
         if row is None:
             raise NotFoundError("Guardian contact not found.")
         return dict(row)
+
+    def list_guardian_test_notifications(self, user_id: int, limit: int = 20) -> list[dict[str, Any]]:
+        _validate_user_id(self.database, user_id)
+        limit = max(1, min(int(limit), 100))
+        rows = self.database.fetch_all(
+            "SELECT * FROM guardian_test_notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT ?",
+            (user_id, limit),
+        )
+        result = []
+        for row in rows:
+            item = dict(row)
+            item["metadata"] = _decode_json(item["metadata"])
+            result.append(item)
+        return result
+
+    def send_guardian_test(
+        self, user_id: int, guardian_id: int, channel: Any, confirm: Any
+    ) -> dict[str, Any]:
+        """Send or simulate one explicitly confirmed guardian test notification."""
+        if confirm is not True:
+            raise ValidationError("Explicit confirmation is required for a test notification.")
+        try:
+            guardian_id = int(guardian_id)
+        except (TypeError, ValueError) as exc:
+            raise ValidationError("A guardian is required for a test notification.") from exc
+        guardian = self._guardian(user_id, guardian_id)
+        selected_channel = str(channel or "").strip().lower()
+        if selected_channel not in {"sms", "voice"}:
+            raise ValidationError("Test channel must be sms or voice.")
+        if selected_channel == "sms" and not bool(guardian.get("sms_enabled", 1)):
+            raise ValidationError("SMS notifications are disabled for this guardian.")
+        if selected_channel == "voice" and not bool(guardian.get("voice_enabled", 1)):
+            raise ValidationError("Voice notifications are disabled for this guardian.")
+
+        test_id = uuid.uuid4().hex
+        now = utc_now()
+        provider = self.sms_provider if selected_channel == "sms" else self.voice_provider
+        status = "SIMULATED"
+        provider_reference = None
+        failure_reason = None
+        metadata: dict[str, Any] = {"test": True, "external_actions_enabled": self.external_actions_enabled}
+        message = (
+            f"CARES TEST NOTIFICATION for {self.user(user_id)['name']}. "
+            "This is an authorized delivery test; no emergency was detected. Please ignore."
+        )
+        if self.external_actions_enabled and provider is not None:
+            try:
+                result = provider.submit(
+                    str(guardian["phone_number"]), message,
+                    f"cares-test-{test_id}",
+                )
+                status = result.status
+                provider_reference = result.provider_reference
+                metadata["provider_detail"] = result.detail
+            except ProviderError as exc:
+                status = "UNKNOWN" if exc.ambiguous else "FAILED"
+                failure_reason = str(exc)[:240]
+            except Exception:
+                status = "UNKNOWN"
+                failure_reason = "provider execution failed"
+        else:
+            metadata["simulation_reason"] = "live actions disabled or provider unavailable"
+
+        self.database.execute(
+            "INSERT INTO guardian_test_notifications(id, user_id, guardian_id, channel, status, created_at, updated_at, provider_reference, failure_reason, metadata) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (test_id, user_id, guardian_id, selected_channel, status, now, now, provider_reference, failure_reason, _json(metadata)),
+        )
+        result = self.database.fetch_one(
+            "SELECT * FROM guardian_test_notifications WHERE id = ? AND user_id = ?",
+            (test_id, user_id),
+        )
+        item = dict(result)
+        item["metadata"] = _decode_json(item["metadata"])
+        self.events.publish(user_id, {"type": "guardian_test", "data": item})
+        return item
 
     # --------------------------- engine persistence ----------------------
 
@@ -1394,11 +1619,16 @@ class CARESBackend:
             if not is_high or create_incident:
                 actions = payload["recommended_action"]
                 for action in actions:
-                    queued = self._action_is_externally_queueable(action)
+                    queued = self._action_is_externally_queueable(action, source)
                     initial_status = "QUEUED" if queued else "GENERATED"
                     metadata = {
                         "source": "GuardianActionMapper",
-                        "execution_status": "QUEUED" if queued else "NOT_CONFIGURED",
+                        "execution_status": (
+                            "QUEUED" if queued
+                            else "SIMULATED" if source.startswith("DEMO_")
+                            else "NOT_CONFIGURED"
+                        ),
+                        **({"source_isolation": "DEMO_NEVER_DISPATCHES"} if source.startswith("DEMO_") else {}),
                     }
                     connection.execute(
                         "INSERT INTO guardian_action_events(user_id, engine_event_id, action_type, status, timestamp, metadata, session_id, source) "
