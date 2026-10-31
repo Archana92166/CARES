@@ -210,8 +210,16 @@ def _twilio_submit(
             status = int(getattr(response, "status", 200))
     except HTTPError as exc:
         retryable = exc.code == 429 or exc.code >= 500
+        detail = ""
+        try:
+            err = json.loads(exc.read(4096).decode("utf-8"))
+            code = err.get("code")
+            msg = str(err.get("message", ""))[:160]
+            detail = f" twilio_code={code} {msg}".rstrip()
+        except Exception:
+            detail = ""
         raise ProviderError(
-            f"provider HTTP {exc.code}", retryable=retryable
+            f"provider HTTP {exc.code}{detail}", retryable=retryable
         ) from exc
     except (URLError, TimeoutError, socket.timeout) as exc:
         raise ProviderError("provider request outcome is ambiguous", ambiguous=True) from exc
