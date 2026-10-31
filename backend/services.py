@@ -131,6 +131,8 @@ class CARESBackend:
         action_retry_backoff_seconds: float = 30.0,
         action_claim_timeout_seconds: float = 300.0,
         session_ttl_seconds: Optional[int] = None,
+        demo_dispatch_enabled: Optional[bool] = None,
+        demo_location: Optional[tuple[float, float]] = None,
     ) -> None:
         self.database = database or Database(db_path)
         self.sessions = SessionStore(
@@ -181,6 +183,24 @@ class CARESBackend:
         self.emergency_recipient = str(
             emergency_recipient or os.getenv("CARES_EMERGENCY_CALL_TO", "")
         ).strip() or None
+        self.demo_dispatch_enabled = (
+            os.getenv("CARES_ENABLE_DEMO_DISPATCH", "0") == "1"
+            if demo_dispatch_enabled is None
+            else bool(demo_dispatch_enabled)
+        )
+        self.demo_location = demo_location
+        if self.demo_location is None:
+            try:
+                lat = os.getenv("CARES_DEMO_LATITUDE", "").strip()
+                lon = os.getenv("CARES_DEMO_LONGITUDE", "").strip()
+                if lat and lon:
+                    self.demo_location = (float(lat), float(lon))
+            except ValueError:
+                self.demo_location = None
+        if self.demo_location is not None:
+            validate_hardware_location(
+                self.demo_location[0], self.demo_location[1], None, 0.0, "demo-configured"
+            )
         self._action_lock = threading.RLock()
         self._action_worker_stop = threading.Event()
         self._action_worker: Optional[threading.Thread] = None
@@ -236,10 +256,22 @@ class CARESBackend:
 
     def _action_is_externally_queueable(self, action_type: str, source: str = "REAL_HARDWARE") -> bool:
         if str(source).upper().startswith("DEMO_"):
-            return False
+            # Demo dispatch is opt-in, needs a configured demo location, and
+            # never reaches the emergency-recipient path.
+            return (
+                self.external_actions_enabled
+                and self.demo_dispatch_enabled
+                and self.demo_location is not None
+                and action_type in {"GUARDIAN_NOTIFICATION", "GUARDIAN_COMMUNICATION"}
+            )
         return self.external_actions_enabled and action_type in {
             "GUARDIAN_NOTIFICATION", "GUARDIAN_COMMUNICATION", "EMERGENCY_ALERT",
         }
+
+    def _demo_blocked(self, source: str, action_type: str) -> bool:
+        if not source.upper().startswith("DEMO_"):
+            return False
+        return not self._action_is_externally_queueable(action_type, source)
 
     def start_action_worker(self, interval_seconds: float = 2.0) -> None:
         """Start the recoverable worker used by the production HTTP server."""
@@ -289,7 +321,7 @@ class CARESBackend:
             )
             count = 0
             for row in rows:
-                if str(row["source"]).upper().startswith("DEMO_"):
+                if self._demo_blocked(str(row["source"]), str(row["action_type"])):
                     self._set_action_status(
                         int(row["id"]), int(row["user_id"]), "GENERATED",
                         {"execution_status": "SIMULATED", "source_isolation": "DEMO_NEVER_DISPATCHES"},
@@ -458,6 +490,17 @@ class CARESBackend:
         explanation = " ".join(str(event.get("explanation") or "No engine explanation available.").split())
         explanation = explanation[:100]
         display_name = str(user["name"])[:60]
+        if str(action.get("source", "")).upper().startswith("DEMO_") and self.demo_location is not None:
+            demo = {"latitude": self.demo_location[0], "longitude": self.demo_location[1]}
+            message = (
+                f"[CARES DEMO - SIMULATED, NOT A REAL EMERGENCY] {display_name} triggered a {risk} alert. "
+                f"Reason: {explanation}. Time: {self._event_time_text(event['timestamp'])}. "
+                f"Demo location: {demo['latitude']:.6f}, {demo['longitude']:.6f}. "
+                f"Map: {self._location_link(demo)}"
+            )
+            if channel == "voice":
+                message = message.rsplit(" Map: ", 1)[0] + ". A map link is in the CARES dashboard."
+            return message[:480]
         fresh, latest = self._location_context_for_alert(
             int(action["user_id"]), str(action["session_id"]), float(event["timestamp"])
         )
@@ -524,7 +567,7 @@ class CARESBackend:
         action_type = str(action["action_type"])
         if action_type not in {"GUARDIAN_NOTIFICATION", "GUARDIAN_COMMUNICATION", "EMERGENCY_ALERT"}:
             return
-        if str(action.get("source", "")).upper().startswith("DEMO_"):
+        if self._demo_blocked(str(action.get("source", "")), action_type):
             self._set_action_status(
                 int(action["id"]), int(action["user_id"]), "GENERATED",
                 {"execution_status": "SIMULATED", "source_isolation": "DEMO_NEVER_DISPATCHES"},
@@ -1628,7 +1671,10 @@ class CARESBackend:
                             else "SIMULATED" if source.startswith("DEMO_")
                             else "NOT_CONFIGURED"
                         ),
-                        **({"source_isolation": "DEMO_NEVER_DISPATCHES"} if source.startswith("DEMO_") else {}),
+                        **(
+                            {"source_isolation": "DEMO_DISPATCH_ENABLED" if queued else "DEMO_NEVER_DISPATCHES"}
+                            if source.startswith("DEMO_") else {}
+                        ),
                     }
                     connection.execute(
                         "INSERT INTO guardian_action_events(user_id, engine_event_id, action_type, status, timestamp, metadata, session_id, source) "
