@@ -286,213 +286,65 @@ class CARESBackend:
         )
         return self.get_monitoring_session(user_id, row["id"]) if row else None
 
-   def persist_engine_output(
-    self,
-    user_id: int,
-    output: EngineOutput,
-    session_id: Optional[str] = None,
-    source: str = "REAL_HARDWARE",
-) -> dict[str, Any]:
-    """Persist an existing EngineOutput without recalculating it."""
-
-    _validate_user_id(self.database, user_id)
-    source = str(source or "REAL_HARDWARE").strip().upper()
-
-    if session_id is None:
-        session = self._active_session_for_source(user_id, source)
-        if session is None:
-            session = self.start_monitoring_session(
-                user_id,
-                source=source,
-            )
-        session_id = session["id"]
-
-    session = self.get_monitoring_session(user_id, session_id)
-
-    if session["status"] != "ACTIVE":
-        raise ValidationError("Monitoring session is not active.")
-
-    payload = output.to_dict()
-    created_at = utc_now()
-
-    notification_action_id = None
-    should_notify = False
-
-    with self.database.transaction() as connection:
-
-        # Get the previous risk level for this monitoring session.
-        previous_event = connection.execute(
-            """
-            SELECT risk_level
-            FROM engine_events
-            WHERE user_id = ? AND session_id = ?
-            ORDER BY id DESC
-            LIMIT 1
-            """,
-            (user_id, session_id),
-        ).fetchone()
-
-        previous_risk = (
-            previous_event["risk_level"]
-            if previous_event else None
-        )
-
-        # Demo SMS requires explicit permission.
-        is_demo_source = source.startswith("DEMO_")
-
-        demo_sms_enabled = os.getenv(
-            "CARES_ENABLE_DEMO_SMS", "0"
-        ).strip().lower() in {
-            "1", "true", "yes", "on"
-        }
-
-        # Send only on a new HIGH-risk transition.
-        should_notify = (
-            payload["risk_level"] == RiskLevel.HIGH.value
-            and previous_risk != RiskLevel.HIGH.value
-            and (
-                not is_demo_source
-                or demo_sms_enabled
-            )
-        )
-
-        # Save engine event.
-        cursor = connection.execute(
-            """
-            INSERT INTO engine_events(
-                user_id, timestamp, heart_rate, baseline,
-                deviation, percentage_deviation, risk_level,
-                risk_score, confidence, trend, persistence,
-                recovery_state, reason_codes, explanation,
-                recommended_actions, created_at, session_id, source
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                user_id,
-                payload["timestamp"],
-                payload["current_value"],
-                payload["baseline"],
-                payload["deviation"],
-                payload["pct_deviation"],
-                payload["risk_level"],
-                payload["risk_score"],
-                payload["confidence"],
-                payload["trend"],
-                payload["persistence"],
-                payload["recovery_state"],
-                _json(payload["reason_codes"]),
-                payload["human_readable_explanation"],
-                _json(payload["recommended_action"]),
-                created_at,
-                session_id,
-                source,
-            ),
-        )
-
-        event_id = int(cursor.lastrowid)
-
-        # Save recommended actions and capture the guardian notification ID.
-        actions = payload["recommended_action"]
-
-        for action in actions:
-            action_cursor = connection.execute(
-                """
-                INSERT INTO guardian_action_events(
-                    user_id, engine_event_id, action_type,
-                    status, timestamp, metadata, session_id, source
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """,
+    def persist_engine_output(
+        self,
+        user_id: int,
+        output: EngineOutput,
+        session_id: Optional[str] = None,
+        source: str = "REAL_HARDWARE",
+    ) -> dict[str, Any]:
+        """Persist an existing EngineOutput without recalculating it."""
+        _validate_user_id(self.database, user_id)
+        source = str(source or "REAL_HARDWARE").strip().upper()
+        if session_id is None:
+            session = self._active_session_for_source(user_id, source)
+            if session is None:
+                session = self.start_monitoring_session(user_id, source=source)
+            session_id = session["id"]
+        session = self.get_monitoring_session(user_id, session_id)
+        if session["status"] != "ACTIVE":
+            raise ValidationError("Monitoring session is not active.")
+        payload = output.to_dict()
+        created_at = utc_now()
+        with self.database.transaction() as connection:
+            cursor = connection.execute(
+                "INSERT INTO engine_events(user_id, timestamp, heart_rate, baseline, deviation, "
+                "percentage_deviation, risk_level, risk_score, confidence, trend, persistence, "
+                "recovery_state, reason_codes, explanation, recommended_actions, created_at, session_id, source) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
-                    user_id,
-                    event_id,
-                    action,
-                    "GENERATED",
-                    payload["timestamp"],
-                    _json({
-                        "source": "GuardianActionMapper"
-                    }),
-                    session_id,
-                    source,
+                    user_id, payload["timestamp"], payload["current_value"], payload["baseline"],
+                    payload["deviation"], payload["pct_deviation"], payload["risk_level"],
+                    payload["risk_score"], payload["confidence"], payload["trend"],
+                    payload["persistence"], payload["recovery_state"], _json(payload["reason_codes"]),
+                    payload["human_readable_explanation"], _json(payload["recommended_action"]), created_at, session_id, source,
                 ),
             )
-
-            if action == "GUARDIAN_NOTIFICATION":
-                notification_action_id = int(
-                    action_cursor.lastrowid
+            event_id = int(cursor.lastrowid)
+            actions = payload["recommended_action"]
+            for action in actions:
+                connection.execute(
+                    "INSERT INTO guardian_action_events(user_id, engine_event_id, action_type, status, timestamp, metadata, session_id, source) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (user_id, event_id, action, "GENERATED", payload["timestamp"], _json({"source": "GuardianActionMapper"}), session_id, source),
                 )
 
-        # Get the latest location for this session.
-        location = self._latest_location(
-            user_id,
-            connection=connection,
-            session_id=session_id,
-        )
-
-        # Create incident when the engine reports HIGH.
-        incident_id = None
-
-        if payload["risk_level"] == RiskLevel.HIGH.value:
-            incident_cursor = connection.execute(
-                """
-                INSERT INTO incidents(
-                    user_id, engine_event_id, risk_level,
-                    timestamp, explanation, location_event_id,
-                    status, session_id, source
+            location = self._latest_location(user_id, connection=connection, session_id=session_id)
+            incident_id = None
+            if payload["risk_level"] == RiskLevel.HIGH.value:
+                incident_cursor = connection.execute(
+                    "INSERT INTO incidents(user_id, engine_event_id, risk_level, timestamp, explanation, location_event_id, status, session_id, source) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (user_id, event_id, payload["risk_level"], payload["timestamp"], payload["human_readable_explanation"],
+                     location["id"] if location else None, "OPEN", session_id, source),
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    user_id,
-                    event_id,
-                    payload["risk_level"],
-                    payload["timestamp"],
-                    payload["human_readable_explanation"],
-                    location["id"] if location else None,
-                    "OPEN",
-                    session_id,
-                    source,
-                ),
-            )
+                incident_id = int(incident_cursor.lastrowid)
 
-            incident_id = int(incident_cursor.lastrowid)
-
-    # Send notification after the database transaction.
-    # Existing SMS message content and TextBee integration are unchanged.
-    if should_notify and notification_action_id is not None:
-        self._send_guardian_notification(
-            user_id=user_id,
-            action_id=notification_action_id,
-            payload=payload,
-            location=location,
-        )
-
-    # Publish engine event.
-    event = self._engine_event(event_id, user_id)
-
-    self.events.publish(
-        user_id,
-        {
-            "type": "engine_output",
-            "data": event,
-        },
-    )
-
-    # Publish incident if created.
-    if incident_id is not None:
-        self.events.publish(
-            user_id,
-            {
-                "type": "incident",
-                "data": self.get_incident(
-                    user_id,
-                    incident_id,
-                ),
-            },
-        )
-
-    return event
+        event = self._engine_event(event_id, user_id)
+        self.events.publish(user_id, {"type": "engine_output", "data": event})
+        if incident_id is not None:
+            self.events.publish(user_id, {"type": "incident", "data": self.get_incident(user_id, incident_id)})
+        return event
 
     def get_current(self, user_id: int) -> dict[str, Any]:
         event = self._engine_event_for_user(user_id)
