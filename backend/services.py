@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import threading
 import uuid
@@ -335,12 +336,20 @@ class CARESBackend:
                 previous_event["risk_level"] if previous_event else None
             )
 
-            # Notify only when entering a new HIGH-risk episode.
+            # Real hardware alerts remain enabled; demo SMS requires opt-in.
+            is_demo_source = source.startswith("DEMO_")
+            if is_demo_source:
+                # Load .env before reading the flag in normal local runs.
+                from guardian.sms import _load_local_env
+                _load_local_env()
+            demo_sms_enabled = os.getenv(
+                "CARES_ENABLE_DEMO_SMS", "0"
+            ).strip().lower() in {"1", "true", "yes", "on"}
             should_notify = (
-    payload["risk_level"] == RiskLevel.HIGH.value
-    and previous_risk != RiskLevel.HIGH.value
-    and not source.startswith("DEMO_")
-)
+                payload["risk_level"] == RiskLevel.HIGH.value
+                and previous_risk != RiskLevel.HIGH.value
+                and (not is_demo_source or demo_sms_enabled)
+            )
 
             cursor = connection.execute(
                 "INSERT INTO engine_events(user_id, timestamp, heart_rate, baseline, deviation, "
@@ -408,6 +417,7 @@ class CARESBackend:
                 action_id=notification_action_id,
                 payload=payload,
                 location=location,
+                is_demo=is_demo_source,
             )
 
         event = self._engine_event(event_id, user_id)
@@ -434,6 +444,7 @@ class CARESBackend:
         action_id: int,
         payload: dict[str, Any],
         location: Optional[dict[str, Any]],
+        is_demo: bool = False,
     ) -> dict[str, Any]:
         """Send a personalized notification for a newly detected HIGH episode."""
 
@@ -471,6 +482,7 @@ class CARESBackend:
                     longitude=longitude,
                     location_address=location_address,
                     timestamp=payload.get("timestamp"),
+                    is_demo=is_demo,
                 )
                 results.append({
                     "guardian_id": guardian["id"],

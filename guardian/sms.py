@@ -59,6 +59,7 @@ def _build_message(
     longitude: Optional[float],
     location_address: Optional[str],
     timestamp: Optional[float | str],
+    is_demo: bool = False,
 ) -> tuple[str, Optional[str]]:
     location_url = None
     if latitude is not None and longitude is not None:
@@ -86,15 +87,27 @@ def _build_message(
         except (TypeError, ValueError, OverflowError, OSError):
             event_time = str(timestamp)
 
-    lines = [
-        "CARES EMERGENCY ALERT",
-        "",
-        "A HIGH-risk event has been detected.",
-        f"User: {user_name}",
-        "Risk Level: HIGH",
-        f"Heart Rate: {heart_rate:.1f} BPM",
-        f"Time: {event_time}",
-    ]
+    if is_demo:
+        lines = [
+            "CARES PRESENTATION DEMO",
+            "",
+            "SIMULATED HIGH-RISK CONDITION DETECTED.",
+            "This alert was generated using synthetic demonstration data.",
+            f"User: {user_name}",
+            "Risk Level: HIGH (SIMULATED)",
+            f"Heart Rate: {heart_rate:.1f} BPM (SYNTHETIC DATA)",
+            f"Time: {event_time}",
+        ]
+    else:
+        lines = [
+            "CARES EMERGENCY ALERT",
+            "",
+            "A HIGH-risk event has been detected.",
+            f"User: {user_name}",
+            "Risk Level: HIGH",
+            f"Heart Rate: {heart_rate:.1f} BPM",
+            f"Time: {event_time}",
+        ]
     if location_address:
         lines.append(f"Location: {location_address}")
     if location_url:
@@ -102,11 +115,20 @@ def _build_message(
     else:
         lines.append("GPS location: Unavailable")
 
-    lines.extend([
-        "",
-        "Please contact the user and provide immediate assistance.",
-        "- CARES System",
-    ])
+    if is_demo:
+        lines.extend([
+            "",
+            "This is a presentation demonstration.",
+            "NOT A REAL MEDICAL EMERGENCY.",
+            "No emergency response is required.",
+            "- CARES System",
+        ])
+    else:
+        lines.extend([
+            "",
+            "Please contact the user and provide immediate assistance.",
+            "- CARES System",
+        ])
     return "\n".join(lines), location_url
 
 
@@ -223,6 +245,7 @@ def send_guardian_sms(
     longitude: Optional[float] = None,
     location_address: Optional[str] = None,
     timestamp: Optional[float | str] = None,
+    is_demo: bool = False,
 ) -> dict:
     """Send a personalized alert using MOCK or TextBee, based on configuration."""
     try:
@@ -253,6 +276,7 @@ def send_guardian_sms(
         longitude=longitude,
         location_address=location_address,
         timestamp=timestamp,
+        is_demo=is_demo,
     )
 
     _load_local_env()
@@ -286,6 +310,17 @@ def send_guardian_sms(
             "recipient": recipient,
             "message": mock_message,
             "location_url": location_url,
+            "real_sms_sent": False,
+        }
+
+    if provider == "textbee" and is_demo and os.getenv(
+        "CARES_ENABLE_DEMO_SMS", "0"
+    ).strip().lower() not in {"1", "true", "yes", "on"}:
+        return {
+            "success": False,
+            "status": "FAILED",
+            "provider": "TEXTBEE",
+            "reason": "Presentation demo SMS is disabled by configuration.",
             "real_sms_sent": False,
         }
 

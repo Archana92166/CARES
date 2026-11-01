@@ -377,3 +377,71 @@ def test_high_risk_backend_queues_textbee_alert_automatically(
     assert notification["metadata"]["provider_accepted"] is True
     assert notification["metadata"]["delivery_confirmed"] is False
     assert notification["metadata"]["recipients"][0]["sms_batch_id"] == "automatic-high-batch"
+
+
+def test_demo_high_does_not_send_sms_when_disabled(tmp_path, monkeypatch):
+    monkeypatch.setenv("CARES_ENABLE_DEMO_SMS", "0")
+    backend = make_backend(tmp_path)
+    user = backend.register("Demo", "demo-disabled@example.com", "password-one")
+    backend.add_guardian(user["id"], "Guardian", "+919876543210", "parent")
+    calls = []
+    monkeypatch.setattr(guardian.sms, "send_guardian_sms", lambda **kwargs: calls.append(kwargs))
+    backend.persist_engine_output(
+        user["id"],
+        make_output(RiskLevel.HIGH, ["GUARDIAN_NOTIFICATION"], 310.0),
+        source="DEMO_SYNTHETIC",
+    )
+    assert calls == []
+    assert any(a["action_type"] == "GUARDIAN_NOTIFICATION" for a in backend.list_actions(user["id"]))
+
+
+def test_demo_high_enabled_notifies_once_and_marks_demo(tmp_path, monkeypatch):
+    monkeypatch.setenv("CARES_ENABLE_DEMO_SMS", "1")
+    backend = make_backend(tmp_path)
+    user = backend.register("Demo", "demo-enabled@example.com", "password-one")
+    backend.add_guardian(user["id"], "Guardian", "+919876543210", "parent")
+    calls = []
+
+    def fake_sms(**kwargs):
+        calls.append(kwargs)
+        return {"success": True, "status": "MOCK_SENT", "provider": "MOCK"}
+
+    monkeypatch.setattr(guardian.sms, "send_guardian_sms", fake_sms)
+    for timestamp in (310.0, 320.0):
+        backend.persist_engine_output(
+            user["id"],
+            make_output(RiskLevel.HIGH, ["GUARDIAN_NOTIFICATION"], timestamp),
+            source="DEMO_SYNTHETIC",
+        )
+    assert len(calls) == 1
+    assert calls[0]["is_demo"] is True
+
+
+def test_demo_sms_message_is_clearly_labelled():
+    message, _ = guardian.sms._build_message(
+        user_name="CARES Demo User", heart_rate=110,
+        latitude=None, longitude=None, location_address=None,
+        timestamp=1793424000, is_demo=True,
+    )
+    assert "CARES PRESENTATION DEMO" in message
+    assert "SYNTHETIC DATA" in message
+    assert "NOT A REAL MEDICAL EMERGENCY" in message
+    assert "Risk Level: HIGH (SIMULATED)" in message
+
+
+def test_textbee_demo_direct_call_blocked_without_opt_in(monkeypatch):
+    monkeypatch.setenv("CARES_SMS_PROVIDER", "textbee")
+    monkeypatch.setenv("CARES_ALLOW_SMS_IN_TESTS", "true")
+    monkeypatch.setenv("CARES_ENABLE_DEMO_SMS", "0")
+    monkeypatch.setenv("TEXTBEE_API_KEY", "fake-test-key")
+
+    def forbid_network(*args, **kwargs):
+        raise AssertionError("Network must not be called")
+
+    monkeypatch.setattr(guardian.sms, "urlopen", forbid_network)
+    result = guardian.sms.send_guardian_sms(
+        phone_number="+919876543210", heart_rate=110,
+        user_name="Demo", is_demo=True,
+    )
+    assert result["success"] is False
+    assert result["status"] == "FAILED"

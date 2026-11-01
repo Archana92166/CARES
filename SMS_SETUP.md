@@ -52,3 +52,23 @@ The integration uses:
 TextBee API acceptance is not delivery. The phone must receive the queued
 request and send it through its SIM; carrier delivery reports may or may not
 be available.
+
+## Presentation Demo SMS
+
+Demo SMS is **disabled by default**. With `CARES_ENABLE_DEMO_SMS=0`,
+`SUSTAINED_HIGH` still runs synthetic samples through the real CARES decision
+engine, creates risk events and guardian actions, but does **not** dispatch SMS.
+
+For a controlled presentation, set `CARES_SMS_PROVIDER=textbee`, provide
+`TEXTBEE_API_KEY` and `TEXTBEE_DEVICE_ID` privately in `.env` or the deployment
+environment, register a consenting guardian/test recipient, and set
+`CARES_ENABLE_DEMO_SMS=1`. Restart the backend after changing environment
+settings. Run `SUSTAINED_HIGH`. Only a transition into HIGH triggers a send;
+consecutive HIGH readings do not send duplicates. The SMS prominently states
+that the data are synthetic and **NOT A REAL MEDICAL EMERGENCY**.
+
+After the presentation, reset `CARES_ENABLE_DEMO_SMS=0` and restart.
+TextBee `PENDING` means accepted/queued, **not confirmed delivered**.
+Keep the registered Android gateway connected, with SMS permissions enabled.
+Never commit `.env` or place credentials in the frontend. For Render testing,
+use a separate staging service instead of changing the production deployment.
