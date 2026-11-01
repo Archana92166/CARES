@@ -225,8 +225,7 @@ class DemoController:
         return status
 
     def _run(self, user_id: int, session_id: str) -> None:
-        with self._lock:
-            run = self._runs.get(user_id)
+        run = self._runs.get(user_id)
         if run is None:
             return
         try:

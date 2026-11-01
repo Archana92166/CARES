@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import threading
 import uuid
@@ -45,7 +46,15 @@ class ValidationError(BackendError):
 
 EMAIL_OR_USERNAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.+@-]{2,119}$")
 PHONE = re.compile(r"^[+()0-9 .-]{7,32}$")
-ACTION_STATUSES = {"GENERATED", "PENDING", "SENT", "DELIVERED", "FAILED", "UNAVAILABLE"}
+ACTION_STATUSES = {
+    "GENERATED",
+    "PENDING",
+    "SENT",
+    "DELIVERED",
+    "MOCK_SENT",
+    "FAILED",
+    "UNAVAILABLE",
+}
 
 
 def _row_to_dict(row: Any) -> Optional[dict[str, Any]]:
@@ -285,6 +294,7 @@ class CARESBackend:
         )
         return self.get_monitoring_session(user_id, row["id"]) if row else None
 
+
     def persist_engine_output(
         self,
         user_id: int,
@@ -295,55 +305,248 @@ class CARESBackend:
         """Persist an existing EngineOutput without recalculating it."""
         _validate_user_id(self.database, user_id)
         source = str(source or "REAL_HARDWARE").strip().upper()
+
         if session_id is None:
             session = self._active_session_for_source(user_id, source)
             if session is None:
                 session = self.start_monitoring_session(user_id, source=source)
             session_id = session["id"]
+
         session = self.get_monitoring_session(user_id, session_id)
         if session["status"] != "ACTIVE":
             raise ValidationError("Monitoring session is not active.")
+
         payload = output.to_dict()
         created_at = utc_now()
+
+        notification_action_id = None
+        should_notify = False
+
         with self.database.transaction() as connection:
+
+            # Check the previous risk level in this monitoring session.
+            previous_event = connection.execute(
+                "SELECT risk_level FROM engine_events "
+                "WHERE user_id = ? AND session_id = ? "
+                "ORDER BY id DESC LIMIT 1",
+                (user_id, session_id),
+            ).fetchone()
+
+            previous_risk = (
+                previous_event["risk_level"] if previous_event else None
+            )
+
+
+            # Notify only when entering a new HIGH-risk episode.
+            # Real hardware alerts retain their existing behaviour.
+            # Demo notifications require explicit environment configuration.
+
+            is_demo_source = source.startswith("DEMO_")
+
+            if is_demo_source:
+                # Load .env before reading the flag in normal local runs.
+                from guardian.sms import _load_local_env
+                _load_local_env()
+
+            demo_sms_enabled = os.getenv(
+                "CARES_ENABLE_DEMO_SMS", "0"
+            ).strip().lower() in {"1", "true", "yes", "on"}
+
+            should_notify = (
+                payload["risk_level"] == RiskLevel.HIGH.value
+                and previous_risk != RiskLevel.HIGH.value
+                and (not is_demo_source or demo_sms_enabled)
+            )
+
+
             cursor = connection.execute(
                 "INSERT INTO engine_events(user_id, timestamp, heart_rate, baseline, deviation, "
                 "percentage_deviation, risk_level, risk_score, confidence, trend, persistence, "
                 "recovery_state, reason_codes, explanation, recommended_actions, created_at, session_id, source) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
-                    user_id, payload["timestamp"], payload["current_value"], payload["baseline"],
-                    payload["deviation"], payload["pct_deviation"], payload["risk_level"],
-                    payload["risk_score"], payload["confidence"], payload["trend"],
-                    payload["persistence"], payload["recovery_state"], _json(payload["reason_codes"]),
-                    payload["human_readable_explanation"], _json(payload["recommended_action"]), created_at, session_id, source,
+                    user_id, payload["timestamp"], payload["current_value"],
+                    payload["baseline"], payload["deviation"],
+                    payload["pct_deviation"], payload["risk_level"],
+                    payload["risk_score"], payload["confidence"],
+                    payload["trend"], payload["persistence"],
+                    payload["recovery_state"], _json(payload["reason_codes"]),
+                    payload["human_readable_explanation"],
+                    _json(payload["recommended_action"]), created_at,
+                    session_id, source,
                 ),
             )
+
             event_id = int(cursor.lastrowid)
             actions = payload["recommended_action"]
+
             for action in actions:
-                connection.execute(
+                action_cursor = connection.execute(
                     "INSERT INTO guardian_action_events(user_id, engine_event_id, action_type, status, timestamp, metadata, session_id, source) "
                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                    (user_id, event_id, action, "GENERATED", payload["timestamp"], _json({"source": "GuardianActionMapper"}), session_id, source),
+                    (
+                        user_id, event_id, action, "GENERATED",
+                        payload["timestamp"],
+                        _json({"source": "GuardianActionMapper"}),
+                        session_id, source,
+                    ),
                 )
 
-            location = self._latest_location(user_id, connection=connection, session_id=session_id)
+                if action == "GUARDIAN_NOTIFICATION":
+                    notification_action_id = int(action_cursor.lastrowid)
+
+            location = self._latest_location(
+                user_id,
+                connection=connection,
+                session_id=session_id,
+            )
+
             incident_id = None
+
             if payload["risk_level"] == RiskLevel.HIGH.value:
                 incident_cursor = connection.execute(
                     "INSERT INTO incidents(user_id, engine_event_id, risk_level, timestamp, explanation, location_event_id, status, session_id, source) "
                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (user_id, event_id, payload["risk_level"], payload["timestamp"], payload["human_readable_explanation"],
-                     location["id"] if location else None, "OPEN", session_id, source),
+                    (
+                        user_id, event_id, payload["risk_level"],
+                        payload["timestamp"],
+                        payload["human_readable_explanation"],
+                        location["id"] if location else None,
+                        "OPEN", session_id, source,
+                    ),
                 )
                 incident_id = int(incident_cursor.lastrowid)
 
+        # Send the guardian notification after the database transaction.
+        # The SMS provider defaults to MOCK; TextBee is enabled by configuration.
+        if should_notify and notification_action_id is not None:
+            self._send_guardian_notification(
+                user_id=user_id,
+                action_id=notification_action_id,
+                payload=payload,
+                location=location,
+                is_demo=is_demo_source,
+            )
+
         event = self._engine_event(event_id, user_id)
-        self.events.publish(user_id, {"type": "engine_output", "data": event})
+
+        self.events.publish(
+            user_id,
+            {"type": "engine_output", "data": event},
+        )
+
         if incident_id is not None:
-            self.events.publish(user_id, {"type": "incident", "data": self.get_incident(user_id, incident_id)})
+            self.events.publish(
+                user_id,
+                {
+                    "type": "incident",
+                    "data": self.get_incident(user_id, incident_id),
+                },
+            )
+
         return event
+
+    def _send_guardian_notification(
+        self,
+        user_id: int,
+        action_id: int,
+        payload: dict[str, Any],
+        location: Optional[dict[str, Any]],
+        is_demo: bool = False,
+    ) -> dict[str, Any]:
+        """Send a personalized notification for a newly detected HIGH episode."""
+
+        from guardian.sms import send_guardian_sms
+
+        guardians = self.list_guardians(user_id)
+
+        if not guardians:
+            return self.update_action_status(
+                user_id,
+                action_id,
+                "UNAVAILABLE",
+                {
+                    "delivery_mode": "CONFIGURED_PROVIDER",
+                    "reason": "No guardian contacts registered.",
+                    "real_sms_sent": False,
+                },
+            )
+
+        user_name = self.user(user_id)["name"]
+        latitude = location.get("latitude") if location else None
+        longitude = location.get("longitude") if location else None
+        location_address = (
+            location.get("formatted_address") if location else None
+        )
+
+        results = []
+        for guardian in guardians:
+            try:
+                result = send_guardian_sms(
+                    phone_number=guardian["phone_number"],
+                    heart_rate=payload["current_value"],
+                    user_name=user_name,
+                    latitude=latitude,
+                    longitude=longitude,
+                    location_address=location_address,
+                    timestamp=payload.get("timestamp"),
+                    is_demo=is_demo,
+                )
+                results.append({
+                    "guardian_id": guardian["id"],
+                    "guardian_name": guardian["name"],
+                    "recipient": result.get("recipient", guardian["phone_number"]),
+                    "success": bool(result.get("success")),
+                    "status": result.get("status", "FAILED"),
+                    "provider": result.get("provider", "MOCK"),
+                    "provider_status": result.get("provider_status"),
+                    "sms_batch_id": result.get("sms_batch_id"),
+                    "reason": result.get("reason"),
+                    "warning": result.get("warning"),
+                })
+            except Exception as exc:
+                results.append({
+                    "guardian_id": guardian["id"],
+                    "guardian_name": guardian["name"],
+                    "recipient": guardian["phone_number"],
+                    "success": False,
+                    "status": "FAILED",
+                    "provider": "UNKNOWN",
+                    "reason": str(exc)[:300],
+                })
+
+        successful = sum(1 for result in results if result["success"])
+        providers = {result["provider"] for result in results}
+        is_mock = providers == {"MOCK"}
+        if successful == 0:
+            final_status = "FAILED"
+        elif is_mock and successful == len(guardians):
+            final_status = "MOCK_SENT"
+        else:
+            # TextBee's 200 response means accepted/queued, not delivered.
+            final_status = "PENDING"
+
+        return self.update_action_status(
+            user_id,
+            action_id,
+            final_status,
+            {
+                "delivery_mode": "MOCK" if is_mock else "TEXTBEE",
+                "guardian_count": len(guardians),
+                "successful_sends_or_simulations": successful,
+                "failed_sends": len(guardians) - successful,
+                "gps_available": (
+                    latitude is not None and longitude is not None
+                ),
+                "real_sms_sent": False,
+                "provider_accepted": any(
+                    result.get("provider_status") == "ACCEPTED"
+                    for result in results
+                ),
+                "delivery_confirmed": False,
+                "recipients": results,
+            },
+        )
 
     def get_current(self, user_id: int) -> dict[str, Any]:
         event = self._engine_event_for_user(user_id)

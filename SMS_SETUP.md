@@ -1,0 +1,101 @@
+# CARES automatic guardian SMS setup
+
+CARES sends a personalized guardian alert automatically when the existing
+risk engine reports a transition into a new HIGH-risk episode. Consecutive
+HIGH readings do not create duplicate alerts; a later HIGH after recovery can
+create a new alert.
+
+## Enable TextBee
+
+1. Copy `.env.example` to `.env` in the project root.
+2. Set `CARES_SMS_PROVIDER=textbee`.
+3. Set `TEXTBEE_API_KEY` to the fresh API key from your TextBee account.
+4. Optionally set `TEXTBEE_DEVICE_ID` to your registered Android device ID.
+   If omitted, TextBee chooses the default/most recently active enabled device.
+5. Keep the TextBee app running with SMS permission enabled and the phone
+   connected to the internet. Ensure the SIM can send SMS.
+6. Start the CARES backend normally.
+
+Do not commit or share `.env`. The project `.gitignore` excludes it.
+Never put the API key in frontend JavaScript or send it in chat.
+
+## Guardian phone numbers
+
+Guardian numbers must be stored in international E.164 format, for example
+`+919876543210`. Spaces, brackets, dots and hyphens are removed automatically
+before sending. Ambiguous local-format numbers are rejected rather than
+guessed.
+
+## Notification status
+
+- `MOCK_SENT`: local simulation only; no real SMS was sent.
+- `PENDING`: TextBee accepted/queued the request. This is not proof of delivery.
+- `FAILED`: configuration, network, TextBee, phone-number or provider error.
+- `UNAVAILABLE`: no guardian contact is registered.
+
+For TextBee sends, CARES stores the returned `smsBatchId`, provider acceptance,
+recipient and warning details in the guardian action metadata. Delivery status
+can be checked using the TextBee batch endpoint; this project version does not
+yet poll that endpoint automatically or claim delivery without confirmation.
+
+## Safe testing
+
+The default provider is `mock`. The test suite also forces mock mode unless a
+test explicitly opts in while replacing the HTTP call with a fake response.
+No real TextBee message is sent by the automated tests.
+
+## TextBee API
+
+The integration uses:
+`POST https://api.textbee.dev/api/v1/gateway/send-sms`
+
+TextBee API acceptance is not delivery. The phone must receive the queued
+## Presentation Demo SMS
+
+CARES supports SMS notifications from the presentation demo.
+
+Demo SMS is disabled by default.
+
+To enable demo SMS for a controlled presentation:
+
+1. Set CARES_SMS_PROVIDER=textbee.
+2. Set CARES_ENABLE_DEMO_SMS=1.
+3. Configure TEXTBEE_API_KEY.
+4. Configure TEXTBEE_DEVICE_ID if required.
+5. Register the guardian's phone number in the CARES dashboard.
+6. Start the SUSTAINED_HIGH presentation scenario.
+
+The synthetic samples pass through the existing CARES risk engine.
+An SMS notification is generated only when the engine transitions
+into HIGH risk.
+
+Consecutive HIGH readings do not generate repeated notifications.
+
+The notification message uses the existing CARES SMS format.
+
+After the presentation, set CARES_ENABLE_DEMO_SMS=0.
+
+TextBee API acceptance means the message was queued.
+It does not confirm delivery to the recipient's handset.
+request and send it through its SIM; carrier delivery reports may or may not
+be available.
+
+## Presentation Demo SMS
+
+Demo SMS is **disabled by default**. With `CARES_ENABLE_DEMO_SMS=0`,
+`SUSTAINED_HIGH` still runs synthetic samples through the real CARES decision
+engine, creates risk events and guardian actions, but does **not** dispatch SMS.
+
+For a controlled presentation, set `CARES_SMS_PROVIDER=textbee`, provide
+`TEXTBEE_API_KEY` and `TEXTBEE_DEVICE_ID` privately in `.env` or the deployment
+environment, register a consenting guardian/test recipient, and set
+`CARES_ENABLE_DEMO_SMS=1`. Restart the backend after changing environment
+settings. Run `SUSTAINED_HIGH`. Only a transition into HIGH triggers a send;
+consecutive HIGH readings do not send duplicates. The SMS prominently states
+that the data are synthetic and **NOT A REAL MEDICAL EMERGENCY**.
+
+After the presentation, reset `CARES_ENABLE_DEMO_SMS=0` and restart.
+TextBee `PENDING` means accepted/queued, **not confirmed delivered**.
+Keep the registered Android gateway connected, with SMS permissions enabled.
+Never commit `.env` or place credentials in the frontend. For Render testing,
+use a separate staging service instead of changing the production deployment.
