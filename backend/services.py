@@ -335,11 +335,20 @@ class CARESBackend:
                 previous_event["risk_level"] if previous_event else None
             )
 
-            # Notify only when entering a new HIGH-risk episode.
-            should_notify = (
+     # Notify only when entering a new HIGH-risk episode.
+# Real hardware notifications retain their existing behaviour.
+# Demo notifications require explicit environment configuration.
+
+is_demo_source = source.startswith("DEMO_")
+
+demo_sms_enabled = os.getenv(
+    "CARES_ENABLE_DEMO_SMS", "0"
+).strip().lower() in {"1", "true", "yes", "on"}
+
+should_notify = (
     payload["risk_level"] == RiskLevel.HIGH.value
     and previous_risk != RiskLevel.HIGH.value
-    and not source.startswith("DEMO_")
+    and (not is_demo_source or demo_sms_enabled)
 )
 
             cursor = connection.execute(
