@@ -336,20 +336,28 @@ class CARESBackend:
                 previous_event["risk_level"] if previous_event else None
             )
 
-            # Real hardware alerts remain enabled; demo SMS requires opt-in.
+
+            # Notify only when entering a new HIGH-risk episode.
+            # Real hardware alerts retain their existing behaviour.
+            # Demo notifications require explicit environment configuration.
+
             is_demo_source = source.startswith("DEMO_")
+
             if is_demo_source:
                 # Load .env before reading the flag in normal local runs.
                 from guardian.sms import _load_local_env
                 _load_local_env()
+
             demo_sms_enabled = os.getenv(
                 "CARES_ENABLE_DEMO_SMS", "0"
             ).strip().lower() in {"1", "true", "yes", "on"}
+
             should_notify = (
                 payload["risk_level"] == RiskLevel.HIGH.value
                 and previous_risk != RiskLevel.HIGH.value
                 and (not is_demo_source or demo_sms_enabled)
             )
+
 
             cursor = connection.execute(
                 "INSERT INTO engine_events(user_id, timestamp, heart_rate, baseline, deviation, "

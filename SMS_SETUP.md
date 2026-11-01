@@ -50,6 +50,33 @@ The integration uses:
 `POST https://api.textbee.dev/api/v1/gateway/send-sms`
 
 TextBee API acceptance is not delivery. The phone must receive the queued
+## Presentation Demo SMS
+
+CARES supports SMS notifications from the presentation demo.
+
+Demo SMS is disabled by default.
+
+To enable demo SMS for a controlled presentation:
+
+1. Set CARES_SMS_PROVIDER=textbee.
+2. Set CARES_ENABLE_DEMO_SMS=1.
+3. Configure TEXTBEE_API_KEY.
+4. Configure TEXTBEE_DEVICE_ID if required.
+5. Register the guardian's phone number in the CARES dashboard.
+6. Start the SUSTAINED_HIGH presentation scenario.
+
+The synthetic samples pass through the existing CARES risk engine.
+An SMS notification is generated only when the engine transitions
+into HIGH risk.
+
+Consecutive HIGH readings do not generate repeated notifications.
+
+The notification message uses the existing CARES SMS format.
+
+After the presentation, set CARES_ENABLE_DEMO_SMS=0.
+
+TextBee API acceptance means the message was queued.
+It does not confirm delivery to the recipient's handset.
 request and send it through its SIM; carrier delivery reports may or may not
 be available.
 
