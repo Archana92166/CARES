@@ -4,3 +4,8 @@ __pycache__/
 .pytest_cache/
 data/wesad/
 data/cares.sqlite3*
+
+# Local secrets
+.env
+.env.*
+!.env.example

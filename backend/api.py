@@ -292,7 +292,6 @@ class CARESAPI:
                 },
 
             )
-
         #* Authentication: current user*
 
         if path == "/api/auth/me" and method == "GET":
@@ -605,7 +604,35 @@ class CARESAPI:
 
                 "result": result,
 
-            }, {}
+            },{}
+        # Notification provider configuration (read-only).
+        if path == "/api/notification-status" and method == "GET":
+            self._user(headers)
+
+            from guardian.sms import _load_local_env
+
+            _load_local_env()
+
+            provider = os.getenv(
+                "CARES_SMS_PROVIDER", "mock"
+            ).strip().lower()
+
+            api_key_configured = bool(
+                os.getenv("TEXTBEE_API_KEY", "").strip()
+            )
+
+            return (
+                200,
+                {
+                    "provider": provider,
+                    "api_key_configured": api_key_configured,
+                    "configured": (
+                        provider == "textbee"
+                        and api_key_configured
+                    ),
+                },
+                {},
+            )
 
         #* Guardian contacts*
 
